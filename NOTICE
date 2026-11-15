@@ -12,3 +12,7 @@ https://openvpi.github.io/vocoders/
 
 Model checkpoints trained for Diffical are not included in this repository.
 Datasets and voicebanks keep their own licenses.
+
+Parts of the vocoder wrapper and mel front-end follow the reference UTAU
+resampler implementation. Dataset names and contributors are not listed here;
+see each dataset's own licence.
