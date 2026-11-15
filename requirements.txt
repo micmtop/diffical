@@ -1,0 +1,13 @@
+numpy>=1.24
+scipy>=1.10
+soundfile>=0.12
+pyworld>=0.3
+PyYAML>=6.0
+torch>=2.0
+onnxruntime>=1.16
+fastapi>=0.110
+uvicorn>=0.27
+librosa>=0.10
+matplotlib>=3.7
+# optional: f0 extraction via RMVPE
+# rmvpe-onnx

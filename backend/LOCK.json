@@ -1,0 +1,15 @@
+{
+  "policy": "neo 内只允许存在这一份实现；任何改动必须更新此文件并说明原因",
+  "wav2mel": {
+    "path": "backend/wav2mel.py",
+    "sha256": "c5a0816319b9963ffc1ec8724491976e8c37d6283f563a2383af292fba400f41",
+    "source": "diffical_new/backend/vocoder/wav2mel.py（逐字节相同）",
+    "spec": "44100/512/128/40/16000/2048, natural-log DRC clip=1e-9, center=False"
+  },
+  "overlap": {
+    "path": "backend/overlap.py",
+    "sha256": "73adf2d05b63277463563999ab2833746ec76932724c62e7a2920969edd09b47",
+    "source": "diffical_new/backend/overlap.py（逐字节相同）",
+    "note": "MelOverlapAccumulator / 相干性感知交接 / 分数帧积分"
+  }
+}

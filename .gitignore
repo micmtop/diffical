@@ -1,0 +1,41 @@
+# Datasets and rendered artifacts (not redistributable / too large)
+data/
+train/
+listen_test/
+blind/
+blind_ocpop/
+eval/
+artifacts/
+dist_p05/
+dist_p05.zip
+tools/models/
+models/
+
+# Model weights and feature caches
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.npz
+*.npy
+*.wav
+*.mp3
+*.flac
+
+# Local config (contains machine-specific absolute paths)
+docs/config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.ipynb_checkpoints/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
