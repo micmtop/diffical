@@ -61,8 +61,7 @@ python -m backend.server            # 监听 http://127.0.0.1:8573
 要在 OpenUtau 里使用，需要一个实现了 `IRenderer`、把渲染请求 POST 到本后端的
 OpenUtau 构建；这部分 C# 代码单独维护，不在本仓库。
 
-`run_openutau_*.sh` 是本地便捷启动脚本，默认假设修改版 `OpenUtau.app` 在仓库旁边，
-且权重在 `train/ckpt_*/` 下。
+启动器/OpenUtau 侧不在本仓库，请根据你使用的构建自行配置后端地址。
 
 ## 训练
 

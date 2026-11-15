@@ -1,6 +1,8 @@
 # Datasets and rendered artifacts (not redistributable / too large)
 data/
-train/
+train/data/
+train/ckpt*/
+train/*.log
 listen_test/
 blind/
 blind_ocpop/
@@ -9,6 +11,33 @@ artifacts/
 dist_p05/
 dist_p05.zip
 tools/models/
+run_openutau_*.sh
+backend/_pitch_utils.py
+backend/diagnose_noise.py
+backend/quality_inspector.py
+backend/switch_clamp.py
+backend/wav2mel.py
+model/net.py
+model/setgen.py
+model/discriminator.py
+tools/assemble_overlap.py
+tools/audio_check.py
+tools/build_gtsinger_pairs.py
+tools/build_mismatch.py
+tools/build_pairs.py
+tools/build_prod_pairs.py
+tools/build_seam_pairs.py
+tools/build_setpairs.py
+tools/detail_metric.py
+tools/hnr_check.py
+tools/infer.py
+tools/infer_voicebank.py
+tools/make_donors.py
+tools/render_compare.py
+tools/render_eval_demo.py
+tools/rmvpe_f0_dir.py
+tools/rmvpe_probe.py
+tools/roundtrip_test.py
 models/
 
 # Model weights and feature caches
