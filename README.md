@@ -1,121 +1,115 @@
 # Diffical Neo
 
-An experimental AI singing-voice renderer for [OpenUtau](https://github.com/stakira/OpenUtau).
-A small model assembles per-phoneme mel segments into one continuous phrase log-mel, which is
-then rendered by a frozen PC-NSF-HiFiGAN vocoder (44.1 kHz, hop 512, 128 bins).
+给 [OpenUtau](https://github.com/stakira/OpenUtau) 用的实验性 AI 歌声渲染器：
+一个小模型把每个音素的 mel 片段装配成整句连续 log-mel，再交给冻结的
+PC-NSF-HiFiGAN 声码器出声（44.1 kHz / hop 512 / 128 bins）。
 
-**The model does the assembly.** There is no waveform crossfade stage and no
-`MelOverlapAccumulator` in the inference or training input. Segment boundaries are part of
-the model's conditioning, and the model is trained to produce the transition itself.
+**装配由模型完成**：没有波形交叉淡化，推理和训练输入里都没有
+`MelOverlapAccumulator`。片段边界是模型的条件输入，过渡由模型自己生成。
 
 ```
-OpenUtau (C#) --HTTP 8573--> Python backend
-                               phone slicing / oto stretch (hop-128 source clock)
-                               -> PointerGen mel assembler
-                               -> frozen pc-nsf-hifigan
-                               -> 44.1 kHz wav back to OpenUtau
+OpenUtau (C#) --HTTP 8573--> Python 后端
+                               音素切片 / oto 拉伸（hop-128 源时钟）
+                               -> PointerGen mel 装配器
+                               -> 冻结的 pc-nsf-hifigan
+                               -> 44.1 kHz 波形返回 OpenUtau
 ```
 
-## Status
+## 当前状态
 
-v0.1, research-grade. It runs end-to-end inside OpenUtau and is being validated by ear and by
-objective seam metrics. Expect rough edges; see [Limitations](#limitations).
+v0.1，研究阶段。已经能在 OpenUtau 里完整跑通，但仍有可听瑕疵，见「已知局限」。
 
-What is implemented:
+已实现：
 
-- **PointerGen assembler** (`model/pointer.py`): 3.54 M params, `c=416`, `n_ctx=3`.
-  Inputs `segs [S,128,L]`, `seg_len`, `seg_idx`, `progress`, `boundary`, `f0`.
-  Output `out = gather_seg(segs, tau) + tanh(residual)`; `tau = progress + tanh(dtau) * 0.5`,
-  so the model can move the read position within a segment.
-- **Production geometry at inference** (seg-norm): each segment only keeps the frames actually
-  covered by `seg_idx` and its `progress` spans 0..1, matching how training pairs are built.
-- **oto-defect mixed training**: 40% of training utterances get oto-like corruption
-  (source-window offsets ±6 frames, 10-25% tail truncation, clipped head, long-consonant
-  windows) while 60% stay clean. This teaches the model to smooth seams that bad oto causes,
-  without dragging down banks whose oto is good.
-- **No output "makeup"**: no per-note loudness matching, no envelope gain on the rendered
-  waveform, no spectral EQ/compression. OpenUtau's VOL/envelope are *not* applied as
-  post-gains; the phrase gets one constant RMS normalization only. (Reference behaviour:
-  HiFiUTAU applies VOL/envelope in the mel domain before vocoding, which we follow.)
-- **Training data audit and objective tests**: `tests/test_algorithm_audit.py`,
-  `tests/test_dataset_audit.py`.
+- **PointerGen 装配器**（`model/pointer.py`）：3.54M 参数，`c=416`，`n_ctx=3`。
+  输入 `segs [S,128,L]`、`seg_len`、`seg_idx`、`progress`、`boundary`、`f0`；
+  `out = gather_seg(segs, tau) + tanh(residual)`，其中 `tau = progress + tanh(dtau) * 0.5`，
+  模型可以在片段内移动读取位置。
+- **生产式几何（seg-norm）**：推理时每段只保留 `seg_idx` 实际覆盖的帧，`progress` 走满 0..1，
+  与训练对的构造方式一致。
+- **oto 缺陷混合训练**：40% 的训练句注入 oto 式缺陷（源窗偏移 ±6 帧、尾部截短 10–25%、
+  头部裁 1–3 帧、长辅音占窗），60% 保持干净。目的是让模型学会抹平坏 oto 造成的接缝，
+  同时不拖累 oto 标得好的声库。
+- **不做输出「化妆」**：没有每音符响度匹配、没有在渲染波形上做包络增益、没有 EQ/压缩；
+  OpenUtau 的 VOL/envelope 不做后置增益，整句只做一个常数 RMS 归一化。
+- **客观审计**：`tests/test_algorithm_audit.py`、`tests/test_dataset_audit.py`。
 
-## Repository layout
+## 仓库结构
 
-| Path | What |
+| 路径 | 内容 |
 |---|---|
-| `backend/` | HTTP server, renderer, phone processor, vocoder wrapper, OpenUtau bridge |
-| `model/` | PointerGen (`pointer.py`), legacy baselines (`net.py`, `setgen.py`) |
-| `tools/` | dataset builders (`build_*_pairs.py`), render/eval/diagnose scripts |
-| `train/` | training loop (`train_set.py`), dataset loader, losses |
-| `tests/` | objective audits (algorithm invariants, dataset checks) |
-| `docs/` | config template, design notes, root-cause write-ups |
+| `backend/` | HTTP 服务、渲染器、音素处理、声码器封装、OpenUtau 桥接 |
+| `model/` | PointerGen（`pointer.py`）与早期基线（`net.py`、`setgen.py`） |
+| `tools/` | 数据集构造（`build_*_pairs.py`）、渲染/评估/诊断脚本 |
+| `train/` | 训练循环（`train_set.py`）、数据加载、损失 |
+| `tests/` | 算法不变量与数据集审计 |
+| `docs/` | 配置模板、设计笔记、根因分析 |
 
-Not in the repo: datasets, model checkpoints, rendered audio, the modified OpenUtau app build.
-Datasets used for training are **not redistributable here**; check each dataset licence before
-redistributing weights trained on it.
+**不在仓库里**：数据集、模型权重、渲染音频、修改版 OpenUtau App。
+训练用的数据集不可再分发，权重发布前需要单独确认数据集许可。
 
-## Quick start (backend only)
+## 快速开始（只跑后端）
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 cp docs/config.example.yaml docs/config.yaml
-# edit docs/config.yaml: vocoder/hnsep paths, device
+# 编辑 docs/config.yaml：声码器/hnsep 路径、device
 
-python -m backend.server            # serves http://127.0.0.1:8573
+python -m backend.server            # 监听 http://127.0.0.1:8573
 ```
 
-OpenUtau integration needs a build that implements `IRenderer` and posts render requests to
-this backend; that C# side is maintained separately and is not part of this repository.
+要在 OpenUtau 里使用，需要一个实现了 `IRenderer`、把渲染请求 POST 到本后端的
+OpenUtau 构建；这部分 C# 代码单独维护，不在本仓库。
 
-The launcher scripts (`run_openutau_*.sh`) are local convenience wrappers; they expect a
-modified `OpenUtau.app` next to the checkout and a checkpoint under `train/ckpt_*/`.
+`run_openutau_*.sh` 是本地便捷启动脚本，默认假设修改版 `OpenUtau.app` 在仓库旁边，
+且权重在 `train/ckpt_*/` 下。
 
-## Training
+## 训练
 
-Data builders expect local OpenCpop/GTSinger copies (not bundled):
+构造器需要本地的 OpenCpop / GTSinger 副本（不随仓库分发）：
 
 ```bash
-# production-geometry pairs, optional oto-like defects
+# 生产式几何 + 可选 oto 缺陷
 python tools/build_oto_pairs.py --utts <npz_dir> --out train/data/oto_full --shard 0 --shards 2
 python tools/build_oto_gtsinger.py --root data/gtsinger/Chinese --out train/data/oto_full --shard 0 --shards 2
 
-# 25k steps on an RTX 2060 (~22 it/s -> ~20 min)
+# RTX 2060 上 25k 步约 20 分钟（~22 it/s）
 python -m train.train_set --arch pointer --width 416 --pairs train/data/oto_full \
   --steps 25000 --batch 4 --device cuda --amp --init ckpt_gan/last.pt \
   --lambda-b 20 --lambda-seam 1 --out ckpt_oto_full
 ```
 
-Rules the training data must respect:
+训练数据必须遵守的规则：
 
-- Segments are slices of the **target recording itself** (reachable content), never other
-  takes of the same phoneme.
-- F0 is extracted from audio (pyworld harvest), never from score MIDI steps.
-- `target` is always the original recording mel.
+- 片段只能取自**目标录音本身**（内容可达），不能用别的 take 的同音素当目标。
+- F0 从音频提取（pyworld harvest），不能用曲谱 MIDI 台阶。
+- `target` 永远是原录音的 mel。
 
-## Limitations
+## 测试
 
-- Residual seam jumps: on hard oto/level discontinuities the assembler still leaves a step
-  (measured: model output seam jump ~1.5 vs ~0.56 in real recordings).
-- Vocoder-inherent start/end transient: a short low-frequency thump at phrase onsets exists in
-  both this engine and the legacy concatenation engine; it is not fixed by the mel model.
-- Long held notes can sound static on some banks, because the source itself is static after
-  stretching.
-- oto compensation is learned, not programmatic: content that bad oto removed cannot be
-  recovered.
+```bash
+python tests/test_algorithm_audit.py      # 装配不变量 A–F
+python tests/test_dataset_audit.py        # 数据集检查
+```
 
-## Licence
+## 已知局限
 
-Code is released under the MIT licence (see `LICENSE`). Datasets, vocoder weights and voice
-banks keep their own licences and are not distributed here.
+- **接缝残余**：遇到硬 oto/电平不连续时装配器仍会留下台阶（实测模型输出接缝跳变约 1.5，
+  真实录音约 0.56）。
+- **声码器起止冲击**：句首/句尾有短促低频冲击，这是声码器在片段边界的固有行为
+  （旧拼接引擎同样存在），mel 模型无法消除。
+- **长音发直**：部分声库长音拉伸后源内容本身就静态，听起来会「电」。
+- **oto 补偿是学出来的**：坏 oto 已经切掉的内容补不回来，只能把剩余内容放顺。
 
----
+## 许可
 
-## 中文简介
+代码使用 **Apache-2.0**（见 `LICENSE`）。数据集、声码器权重和声库各自遵循其原始许可，
+不随本仓库分发。模型权重暂不发布。
 
-Diffical Neo 是给 OpenUtau 用的实验性 AI 歌声渲染器：小模型把每个音素的 mel 片段装配成整句
-mel，再交给冻结的 PC-NSF-HiFiGAN 出声。装配完全由模型完成，没有波形交叉淡化，也没有
-overlap accumulator。包含生产式几何装配、oto 缺陷混合训练（40% 坏 oto + 60% 干净）、以及
-不做输出化妆的约束（不做每音符响度匹配/EQ/压缩）。数据集与权重不进仓库。
+## 参考/致谢
+
+- [OpenUtau](https://github.com/stakira/OpenUtau)
+- pc-nsf-hifigan（声码器）
+- HiFiUTAU-engine（VOL/envelope 的 mel 域处理参考）
