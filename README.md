@@ -61,7 +61,16 @@ python -m backend.server            # 监听 http://127.0.0.1:8573
 要在 OpenUtau 里使用，需要一个实现了 `IRenderer`、把渲染请求 POST 到本后端的
 OpenUtau 构建；这部分 C# 代码单独维护，不在本仓库。
 
-启动器/OpenUtau 侧不在本仓库，请根据你使用的构建自行配置后端地址。
+## 前端（OpenUtau fork）
+
+界面侧单独维护：**https://github.com/micmtop/OpenUtau**（`diffical` 分支，默认分支）。
+
+- 每天 03:00 UTC 自动把 `openutau/OpenUtau` 的 master 拉到 `upstream` 分支，并把
+  `diffical` rebase 到最新上游（补丁冲突时 job 失败，需手动处理）
+- push 到 `diffical` 自动构建 Windows x64 / macOS arm64 / Linux x64，产物在 Actions
+  artifacts 中
+- 前端只包含 `OpenUtau.Core/Diffical/` 与渲染器注册；自动音高（AutoPitch/PrettyPitch）
+  不在该 fork 中
 
 ## 训练
 
