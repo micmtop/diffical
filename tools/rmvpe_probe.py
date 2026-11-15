@@ -1,7 +1,8 @@
+import os
 import numpy as np
 from rmvpe_onnx import RMVPE
 
-m = RMVPE(model_path=r"D:/diffical_neo/rmvpe.onnx", device="cpu")
+m = RMVPE(model_path=os.environ.get("DIFFICAL_RMVPE", "rmvpe.onnx"), device="cpu")
 sr = 16000
 t = np.arange(sr * 2) / sr
 x = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)

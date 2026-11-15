@@ -3,7 +3,7 @@
 f0 帧率与 hop512/44.1k 对齐（11.6ms/帧），并在提取后做 <55Hz→0、>1100Hz→0 清理。
 """
 from __future__ import annotations
-import argparse, pathlib
+import argparse, os, pathlib
 import numpy as np, soundfile as sf
 from scipy.signal import resample_poly
 
@@ -14,7 +14,7 @@ FRAME_MS = HOP / SR * 1000.0
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True)
-    ap.add_argument("--model", default="D:/diffical_neo/rmvpe.onnx")
+    ap.add_argument("--model", default=os.environ.get("DIFFICAL_RMVPE", "rmvpe.onnx"))
     ap.add_argument("--out", default="gtsinger_f0.npz")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()

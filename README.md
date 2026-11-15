@@ -1,4 +1,4 @@
-# Diffical Neo
+# Diffical
 
 给 [OpenUtau](https://github.com/stakira/OpenUtau) 用的实验性 AI 歌声渲染器：
 一个小模型把每个音素的 mel 片段装配成整句连续 log-mel，再交给冻结的

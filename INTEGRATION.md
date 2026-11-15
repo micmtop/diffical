@@ -1,7 +1,7 @@
-# 接入说明（diffical_neo 整句装配模型）
+# 接入说明（Diffical 整句装配模型）
 
 ## 代码位置（单一代码源）
-- 本仓库 `diffical_neo` 是唯一代码源：模型、训练、评测与 **OpenUtau 接入层**（`backend/`）。
+- 本仓库 `diffical` 是唯一代码源：模型、训练、评测与 **OpenUtau 接入层**（`backend/`）。
 - OpenUtau app 包仍在 `../diffical_new/mvp-openutau-osx-arm64/OpenUtau.app`（不重编译；只走 HTTP）。
 - `diffical_new/backend` 是搬迁前的历史副本，不再修改。
 - 模型定义唯一在 `model/pointer.py`；`backend/pointer_model.py` 只是转出，避免副本漂移。
@@ -13,7 +13,7 @@
 
 ## 启动
 ```bash
-cd ~/Documents/diffical/diffical_neo
+cd diffical
 bash run_openutau_model.sh          # 模型装配 + app
 # 可选接缝安全过渡（默认关闭；2 帧 ≈ 把 1.5 的台阶摊到 5 帧）
 DIFFICAL_SEAM_RAMP=2 bash run_openutau_model.sh
@@ -49,4 +49,4 @@ DIFFICAL_SEAM_RAMP=2 bash run_openutau_model.sh
 - app 退出**不会**杀 backend。换环境/换代码后重开前先确认 8573 的来源：
   `lsof -nP -iTCP:8573 -sTCP:LISTEN` 或 `ps -E -p <pid> | tr ' ' '\n' | grep DIFFICAL_BACKEND_PATH`。
   旧 backend 会被 `IsServerHealthy` 直接复用，导致看起来"还在用旧代码"。
-- 冒烟：`cd diffical_neo && python -m backend.server`，几秒后 `curl 127.0.0.1:8573/` 应返回 200。
+- 冒烟：`cd diffical && python -m backend.server`，几秒后 `curl 127.0.0.1:8573/` 应返回 200。
