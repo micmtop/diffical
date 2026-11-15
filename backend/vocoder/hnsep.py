@@ -1,6 +1,6 @@
 """hnsep CascadedNet 封装
 
-复用自 hifisampler (util/hnsep.py + hnsep/nets.py)。
+复用自参考实现 (util/hnsep.py + hnsep/nets.py)。
 
 将音频分离为谐波分量（voicing）和噪声分量。
 用于：

@@ -14,7 +14,7 @@ import numpy as np, soundfile as sf
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from canvas import mel_of, spans_frames
-from opencpop import parse_file
+from zh_corpus import parse_file
 import pyworld as pw
 
 SR, HOP = 44100, 512
@@ -41,8 +41,8 @@ def _resample(seg, n):
     return np.stack([np.interp(xt, xs, seg[b]) for b in range(seg.shape[0])]).astype(np.float32)
 
 
-def build_one(u, rng, defect_frac=0.4):
-    wav, sr = sf.read(f"data/opencpop/wavs/{u.utt_id}.wav", dtype="float32")
+def build_one(u, rng, defect_frac=0.4, wavs_dir="data/wavs"):
+    wav, sr = sf.read(f"{args.wavs_dir}/{u.utt_id}.wav", dtype="float32")
     assert sr == SR
     target = mel_of(wav); T = target.shape[1]
     spans = spans_frames(u.ph_dur)
@@ -116,11 +116,14 @@ def main():
     ap.add_argument("--shards", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--defect-frac", type=float, default=0.4)
+    ap.add_argument("--suffix", default="")
+    ap.add_argument("--wavs-dir", default="data/wavs")
+    ap.add_argument("--transcriptions", default="data/transcriptions.txt")
     args = ap.parse_args()
     out = pathlib.Path(args.out) / args.split
     out.mkdir(parents=True, exist_ok=True)
     files = sorted(pathlib.Path(args.utts).glob("*.npz")) if args.utts else []
-    utts = {u.utt_id: u for u in parse_file("data/opencpop/transcriptions.txt")}
+    utts = {u.utt_id: u for u in parse_file(args.transcriptions)}
     ids = [f.stem for f in files] if files else sorted(utts)
     n = 0
     for uid in ids[args.shard:: args.shards]:
@@ -132,7 +135,7 @@ def main():
             s = build_one(u, rng, args.defect_frac)
         except Exception as e:
             print("SKIP", uid, str(e)[:80]); continue
-        np.savez_compressed(out / f"{uid}.npz", **s); n += 1
+        np.savez_compressed(out / f"{uid}{args.suffix}.npz", **s); n += 1
     print(f"{args.split}: {n} files -> {out}")
 
 

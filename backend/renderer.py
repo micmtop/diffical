@@ -82,7 +82,7 @@ FLAGS_PATTERN = re.compile(r"([fe|fl|fo|fv|fp|ve|vo|g|t|A|B|G|P|S|p|R|D|C|Z|Hv|H
 def parse_flags(flags_str: str) -> Dict[str, int]:
     """解析UTAU flags字符串
     
-    参考 hifisampler/util/parse_utau.py 的 flag_re 正则表达式
+    参考同类实现/util/parse_utau.py 的 flag_re 正则表达式
     
     Args:
         flags_str: flags字符串，如 "Hb50Hv100g-50"
@@ -99,7 +99,7 @@ def parse_flags(flags_str: str) -> Dict[str, int]:
 def map_flag_to_parameter(phone: RenderPhone) -> Dict[str, float]:
     """将音素的flags映射为参数值
     
-    参考 hifisampler 的参数映射：
+    参考同类实现 的参数映射：
     - Hb (0-500, default 100) -> breathiness (0-100, default 50)
       breathiness = Hb / 5
     - Hv (0-150, default 100) -> voicing (0-100, default 100)
@@ -136,7 +136,7 @@ def map_flag_to_parameter(phone: RenderPhone) -> Dict[str, float]:
                     continue
 
                 if flag_name == 'Hb':
-                    # Hb=100 是 hifisampler 默认（中性）；映射到 0（无额外气声）
+                    # Hb=100 是 同类重采样器 默认（中性）；映射到 0（无额外气声）
                     params['breathiness'] = np.clip((flag_value - 100.0) / 5.0, 0, 100)
                 elif flag_name == 'Hv':
                     params['voicing'] = np.clip(flag_value / 1.5, 0, 100)
@@ -368,7 +368,7 @@ class PhoneProcessor:
     def _load_wave(self) -> np.ndarray:
         """加载完整音频文件（不裁剪）
 
-        参考 hifisampler 的做法：先加载完整音频，提取完整 Mel，
+        参考同类实现 的做法：先加载完整音频，提取完整 Mel，
         然后在 process() 中按 oto.ini 参数裁剪和拉伸
 
         防御：找不到音素音频文件时降级为静音，避免整个渲染崩溃。
@@ -398,7 +398,7 @@ class PhoneProcessor:
                 tail_intrude_ms: float = 0.0, tail_overlap_ms: float = 0.0) -> dict:
         """处理音素：加载 → 提取 Mel → 按 oto.ini 裁剪 → 时间拉伸
 
-        参考 hifisampler 的 resampler.py：
+        参考同类实现 的 resampler.py：
         1. 提取完整音频的 Mel（key_shift=0，让声码器通过 F0 处理音高）
         2. 按 oto.ini 的 offset/consonant/cutoff 裁剪并拉伸到目标时长
         3. 辅音段（consonant 之前）F0 设为 0，只有元音段使用目标 F0
@@ -431,7 +431,7 @@ class PhoneProcessor:
             }
 
         # 峰值限制：只在接近削波时缩小（>0.98），不做 pre_scale 降 6dB
-        # （hifisampler 不做此操作；pre_scale=0.5 会导致 mel 全带 -6dB 失真）
+        # （同类重采样器 不做此操作；pre_scale=0.5 会导致 mel 全带 -6dB 失真）
         wave_peak = np.max(np.abs(wave))
         if wave_peak > 0.98:
             pre_scale = 0.98 / wave_peak
@@ -464,31 +464,27 @@ class PhoneProcessor:
         mel_analyzer = self.model_manager.mel_analyzer
         
         # 使用hop=512计算帧时长（与声码器一致）
-        # 参考 hifisampler：提取时使用细hop，但时间映射使用声码器hop
+        # 参考同类实现：提取时使用细hop，但时间映射使用声码器hop
         frame_ms = self.config.audio.hop_size / self.sr * 1000
         origin_hop_size = self.config.audio.origin_hop_size
         hop_ratio = self.config.audio.hop_size // origin_hop_size
 
-        # 参考 hifisampler：key_shift 默认固定为 0
+        # 参考同类实现：key_shift 默认固定为 0
         # pc-nsf-hifigan 是 pitch-conditional vocoder：
         # - Mel 提供频谱包络（音色），不需要频谱移位
         # - F0 输入控制音高，声码器通过 F0 实现音高转换
-        # 之前计算 key_shift 会导致 Mel 频谱被不必要地移位，引入高频伪影
         # （声码器往返测试显示 key_shift=0 时高频能量最低）
         #
         # 唯一例外：gender（g flag / GEN 曲线）需要共振峰（频谱）偏移。
-        # hifisampler 用 mel_analyzer(wave, g/100, 1) 实现 formant shift，
+        # 同类重采样器 用 mel_analyzer(wave, g/100, 1) 实现 formant shift，
         # 这里映射 g=(gender-50)*6，所以半音数 = (gender-50)*0.06。
         # OpenUTAU/参考语义：gender 默认 0 = 中性（不是 50！）。
-        # key_shift(半音) = gender/100（HiFiUTAU-engine: semitone_curve = genc/100）。
-        # 旧实现 (gender-50)*0.06 会把默认 gender=0 变成 -3 半音 -> 每个音素共振峰
-        # 下移 3 半音 -> 音色变粗/自带性别（用户实测"好像自带了性别参"）。
+        # key_shift(半音) = gender/100（同类引擎: semitone_curve = genc/100）。
         key_shift = 0.0
         if abs(gender) > 0.5:
             key_shift = gender / 100.0
 
-        # 参考 hifisampler：应用 flags 参数处理（Hb/Hv/Ht/g）
-        # 在提取 Mel 之前处理音频，确保参数效果体现在频谱中
+        # 参考同类实现：应用 flags 参数处理（Hb/Hv/Ht/g）
         processed_wave = wave.copy()
 
         # 注意：OpenUTAU 曲线默认值是 breathiness=0 / tension=0 / voicing=100
@@ -543,14 +539,13 @@ class PhoneProcessor:
                 "pre_scale": pre_scale,
             }
 
-        # 参考 hifisampler 的时间轴计算
+        # 参考同类实现 的时间轴计算
         phone = self.phone
         offset_ms = phone.oto_offset
         consonant_ms = phone.oto_consonant
         cutoff_ms = phone.oto_cutoff
 
         # 原始音频时间轴（以 hop=128 帧为单位）
-        # BUG FIX: 之前用 frame_ms (hop=512) 计算总时长，导致 total_time_ms 被放大 4 倍，
         # end_ms 随之偏移到真实音频末端之外，np.interp 对越界点返回末帧常量，
         # 使整句 Mel 退化为低能量静态帧 → 声码器输出噪声。
         origin_frame_ms = origin_hop_size / self.sr * 1000
@@ -558,7 +553,7 @@ class PhoneProcessor:
         t_orig_ms = np.arange(orig_n_frames) * origin_frame_ms + origin_frame_ms / 2
 
         # 确定裁剪区域（毫秒）
-        # 参考 hifisampler 的 oto.ini cutoff 语义：
+        # 参考同类实现 的 oto.ini cutoff 语义：
         # - cutoff > 0: 右边界 = 总时长 - cutoff（从末尾算）
         # - cutoff < 0: 右边界 = offset + |cutoff|（从 offset 算）
         # - cutoff == 0: 右边界 = 总时长
@@ -666,7 +661,6 @@ class PhoneProcessor:
             target_n_frames += _extra_frames
 
         # 波形处理：仅供未调用的 _concatenate_waveforms 调试路径保留。
-        # 之前每次都跑 librosa.effects.time_stretch + kaiser_best resample（昂贵），
         # 但该波形从不被消费（渲染走 Mel 域拼接 + 声码器重建），纯属白算。
         # 这里只做简单裁剪/对齐，速度可忽略。
         wave_orig_samples = len(wave)
@@ -1118,7 +1112,7 @@ class PhraseRenderer:
     def render(self) -> RenderResultResponse:
         """执行整句渲染
 
-        参考 hifisampler 和 HiFiUTAU-engine 架构：
+        参考同类实现 和 同类引擎 架构：
         1. 构建整句 F0 曲线
         2. 处理每个音素获取 Mel 频谱
         3. 拼接 Mel 频谱（使用 overlap 交叉淡入淡出）
@@ -1179,7 +1173,6 @@ class PhraseRenderer:
         phone_features = self._process_phones(total_frames, f0_phrase)
         self.phone_features = phone_features  # 保存用于调试
 
-        # 3. Mel域拼接（在声码器之前做交叉淡入淡出，确保频谱连续性）
         # 声码器会完全重建波形，因此波形域crossfade的相位信息会被破坏
         language = getattr(self.req, 'language', 'JA') or 'JA'
         if os.environ.get("DIFFICAL_ENGINE", "").lower() == "model":
@@ -1210,7 +1203,7 @@ class PhraseRenderer:
         # 3.5 预回声消除 - 已禁用
         # BUG: threshold_db=-35.0 配合 energy_diff > threshold_db 导致几乎所有帧被判定为 attack，
         # 所有帧被衰减至近零，Mel mean 从 -3.91 暴跌至 -22.24，声码器输出噪声。
-        # hifisampler 不使用此步骤，禁用后渲染质量更优。
+        # 同类重采样器 不使用此步骤，禁用后渲染质量更优。
         # try:
         #     mel_phrase = pre_echo_suppression(mel_phrase, threshold_db=-35.0, attack_frames=2)
         #     logger.info("预回声消除完成")
@@ -1228,13 +1221,11 @@ class PhraseRenderer:
         logger.info(f"整句合成完成: {len(samples)} 采样")
 
         # 3. 谐波/噪声参数处理（曲线参数：breathiness/tension/voicing/brel/breh/warm/hcmp）
-        # 参考 HiFiUTAU-engine 的 HN-SEP 统一管线：一次分离，多次处理。
+        # 参考同类实现 的 HN-SEP 统一管线：一次分离，多次处理。
         # 全部参数为默认值时是完全的 no-op（不做分离、不改波形），保证默认音质不变；
         # 仅在用户绘制了对应曲线时才启用分离与参数处理。
         # 注意：OpenUTAU 的曲线默认值是 tension=0 / breathiness=0 / voicing=100
-        # （不是 50/50/100）。旧实现用 50 作默认判断，导致**默认请求**（曲线全 0）
         # 被误判为"用户画了曲线"-> 触发 HN-SEP，breathiness=0 把谐波清零 ->
-        # 输出只剩噪声/静音（用户实测 4 个短语中 1 个近静音、其余空/糊）。
         use_hn_processing = (not np.allclose(tension, 0, atol=0.01) or
                              not np.allclose(breathiness, 0, atol=0.01) or
                              not np.allclose(voicing, 100, atol=0.01) or
@@ -1442,7 +1433,7 @@ class PhraseRenderer:
                 "end_ms": note.end_ms - self.req.position_ms + self.req.leading_ms,
                 "volume": note_volume,
             })
-        # 每音符响度匹配已从生产路径移除（与 HiFiUTAU 一致：不做 per-note 电平补偿）。
+        # 每音符响度匹配已从生产路径移除（与参考实现一致：不做 per-note 电平补偿）。
         # 保留整句 RMS 归一化——它只是一个常数增益，不产生边界电平跳变。
         self.note_loudness_trace = {"reason": "removed_per_note_matching", "notes": []}
 
@@ -1572,7 +1563,6 @@ class PhraseRenderer:
             audio_start_ms = phone.position_ms - self.req.position_ms + self.req.leading_ms - preutter_ms
             note_end_ms = phone.end_ms - self.req.position_ms + self.req.leading_ms
             start_frame = int(audio_start_ms / self.frame_ms)
-            # 用 ceil 包含音符的最后一个不完整帧：旧实现 int() 会把末尾
             # 不足一帧的部分排除（mel 仍有元音能量但 f0=0）-> 声码器噪声分支
             # 在乐句末尾发一帧宽带噪声（"乐句末尾偶尔杂音"）。
             end_frame = int(np.ceil(note_end_ms / self.frame_ms))
@@ -1617,9 +1607,8 @@ class PhraseRenderer:
                 else:
                     f0[i] = midi_to_hz(base_tone)
             
-            # 限制F0范围，防止极端异常值（参考 hifisampler：不做硬裁剪，这里仅防越界）
+            # 限制F0范围，防止极端异常值（参考同类实现：不做硬裁剪，这里仅防越界）
             # 50~1500Hz 覆盖 E1~G6 全人声范围。关键：只 clip 有声帧（f0>0），
-            # 静音帧保持 0——旧实现 np.clip(f0,50,1500) 会把静音帧变成 50Hz 基频，
             # 声码器尾部上下文重复该帧 -> 整段 40-160Hz 低频轰鸣（音质"闷/糊"根因）。
             f0 = np.where(f0 > 0, np.clip(f0, 50.0, 1500.0), 0.0)
 
@@ -1649,7 +1638,7 @@ class PhraseRenderer:
             cent = float(pitches[idx0] * (1.0 - frac) + pitches[idx1] * frac)
             f0[i] = midi_to_hz(cent / 100.0)
 
-        # 限制F0范围，防止极端异常值（参考 hifisampler：不做硬裁剪，这里仅防越界）。
+        # 限制F0范围，防止极端异常值（参考同类实现：不做硬裁剪，这里仅防越界）。
         # 只 clip 有声帧，静音帧保持 0（否则 0 -> 50Hz 低频轰鸣）。
         f0 = np.where(f0 > 0, np.clip(f0, 50.0, 1500.0), 0.0)
 
@@ -1718,7 +1707,6 @@ class PhraseRenderer:
             start_frame_exact = audio_start_ms / self.frame_ms
             pre_vel_ms = target_start_ms - audio_start_ms
             start_frame = int(audio_start_ms / self.frame_ms)
-            # 允许负 start_frame：片段起点可在短语开头之前（VCV 前母音提前），
             # 拼接时负帧位置静音、内容不错位（clamp 到 0 会让 mel 内容整体后移，
             # 子音/元音落入 envelope 淡出区被切掉 -> 咬字丢失 + 电平凹陷）。
 
@@ -1746,7 +1734,7 @@ class PhraseRenderer:
             phone_params = map_flag_to_parameter(phone)
 
             # 曲线参数（气声/张力/浊音度/性别，来自 OpenUTAU 表达式曲线）→ 音素级取值。
-            # 参考 HiFiUTAU-engine：曲线的 breath/tension/voicing/genc 逐音素应用到该音素片段。
+            # 参考同类实现：曲线的 breath/tension/voicing/genc 逐音素应用到该音素片段。
             # 合并规则：音素显式设置了对应 flag 时以 flag 为准，否则用曲线在该音素区间的均值。
             flag_names = {f[0] for f in (phone.flags or [])
                           if isinstance(f, (tuple, list)) and len(f) > 0 and isinstance(f[0], str)}
@@ -1811,7 +1799,7 @@ class PhraseRenderer:
                               language: str = 'JA') -> np.ndarray:
         """波形域拼接（保留相位信息，避免Mel域拼接伪影）
 
-        核心策略（参考 hifisampler 和 HiFiUTAU-engine）：
+        核心策略（参考同类实现 和 同类引擎）：
         1. 先在波形域进行crossfade拼接，保留相位信息
         2. 拼接完成后统一提取Mel频谱
         3. 使用纯cosine crossfade，避免复杂的能量匹配导致的伪影
@@ -2506,7 +2494,7 @@ class PhraseRenderer:
 
         normalize=True 时做 mel 能量归一化（boost 到 target -5，供整句合成用）；
         normalize=False 时不做 boost（逐音素合成用，避免片段局部 mel_mean 导致
-        boost 过大、输出削波/失真——hifisampler 不做能量归一化）。
+        boost 过大、输出削波/失真——同类重采样器 不做能量归一化）。
         """
         if mel.shape[-1] == 0 or len(f0) == 0:
             return np.zeros(0, dtype=np.float32)
@@ -2521,7 +2509,7 @@ class PhraseRenderer:
             mel = mel[:, :n_frames]
             f0 = f0[:n_frames].copy()
 
-        # hifisampler fill=6 模式：在前后各填充6帧上下文
+        # 同类重采样器 fill=6 模式：在前后各填充6帧上下文
         # 这给声码器提供了边界帧的时间上下文，减少边界伪影
         context_frames = 6
         if n_frames > context_frames:
@@ -2544,10 +2532,9 @@ class PhraseRenderer:
         mel_active = mel_padded.copy()
         f0_active = f0_padded.copy()
 
-        # F0 处理策略（参考 hifisampler 和 HiFiUTAU-engine）：
+        # F0 处理策略（参考同类实现 和 同类引擎）：
         # - F0=0 表示清音/静音，vocoder 的 SineGen 会自动生成噪声而不是正弦波
         # - 不填充辅音/preutter 帧的 F0，让它们保持清音状态
-        # - 之前填充 F0 导致低能量帧产生假音高（921Hz）和跑调
         # - 仅对 NaN/负值做修复
         f0_active = np.where(np.isnan(f0_active) | (f0_active < 0), 0.0, f0_active)
 
@@ -2612,7 +2599,6 @@ class PhraseRenderer:
 
         # Mel频谱能量归一化：声码器需要特定的能量范围才能输出正常音量的音频
         # 参考: pc-nsf-hifigan 训练时的 Mel 范围通常是 [-15, 0]
-        # 实测 natural mel_mean ≈ -4~-6, target=-5.0 仅 ±1dB 微调, 非显著偏离 hifisampler
         if normalize:
             mel_mean = np.mean(mel_processed[mel_processed > -70])
             target_mel_mean = -5.0
@@ -2633,7 +2619,6 @@ class PhraseRenderer:
             samples = samples_with_context
 
         # 注意：这里不做波形域边界交叉淡化 —— 拼接统一在 mel 域完成（用户明确要求
-        # mel 拼接而非波形拼接）。之前残留的波形域 fade 与 mel crossfade 叠加，
         # 会引入相位叠加/双音（鬼音）。
 
         # Do not re-envelope inferred voiced segments. The old 20ms fades ran
@@ -2642,7 +2627,6 @@ class PhraseRenderer:
         # not the trimmed waveform. OpenUtau's mel envelope already owns those
         # edges; retain only the short phrase-edge anti-click fade below.
 
-        # 首尾短淡入淡出（仅防 click，2.9ms；之前 46ms 会抹掉首音辅音起音/尾音收尾）
         fade_samples = min(128, len(samples) // 4)
         if fade_samples > 0:
             fade_in_win = np.linspace(0, 1, fade_samples)
@@ -2700,11 +2684,11 @@ class PhraseRenderer:
         return result[:len(audio)].astype(np.float32)
 
     def _loudness_normalize(self, samples: np.ndarray) -> np.ndarray:
-        """响度归一化（参考hifisampler和HiFiUTAU做法）
+        """响度归一化（参考同类重采样器和同类引擎做法）
 
         参考项目做法：
-        - hifisampler: -16 LUFS
-        - HiFiUTAU: 0.5 RMS
+        - 同类重采样器: -16 LUFS
+        - 同类引擎: 0.5 RMS
         - 两者都使用简单硬限幅，不使用复杂的动态范围压缩
 
         简化策略：

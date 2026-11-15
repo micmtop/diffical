@@ -46,6 +46,24 @@ def loss_fn(pred, target, boundary, valid, lambda_b=8.0, args_ls=0.0, lambda_tv=
              "ltv": float(ltv)})
 
 
+def run_eval(model, ev, dev, args):
+    model.eval()
+    with torch.no_grad():
+        b = collate([ev[j] for j in range(len(ev))])
+        b = {k: v.to(dev) for k, v in b.items()}
+        if args.arch == "pointer":
+            pred = model(b["segs"], b["seg_len"], b["seg_idx"], b["progress"], b["boundary"], b["f0"])
+        else:
+            pred, _ = model(b["segs"], b["seg_mask"], b["seg_idx"], b["progress"], b["boundary"], b["f0"])
+        vv = b["valid"].unsqueeze(1)
+        l1 = (((pred - b["target"]).abs() * vv).sum() / (vv.sum().clamp_min(1.0) * pred.shape[1])).item()
+        tgt = b["target"]
+        vmask = b["valid"].unsqueeze(1)
+        mu = (tgt * vmask).sum(dim=2, keepdim=True) / vmask.sum(dim=2, keepdim=True).clamp_min(1.0)
+        const = (((tgt - mu).abs() * vmask).sum() / (vmask.sum().clamp_min(1.0) * tgt.shape[1])).item()
+    model.train()
+    return l1, const
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pairs", default="train/data/set_v1")
@@ -54,6 +72,8 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--log-every", type=int, default=100)
+    ap.add_argument("--eval-every", type=int, default=0)
+    ap.add_argument("--save-best", action="store_true")
     ap.add_argument("--out", default="ckpt_set")
     ap.add_argument("--arch", default="attn", choices=["attn", "pointer"])
     ap.add_argument("--width", type=int, default=192)
@@ -107,6 +127,7 @@ def main():
         print(f"tb disabled: {e}", flush=True)
         writer = None
     it = 0
+    best = None
     t0 = time.time()
     while it < args.steps:
         perm = torch.randperm(len(tr)).tolist()
@@ -191,26 +212,19 @@ def main():
                     writer.add_scalar("loss/lf", parts["lf"], it)
                     writer.add_scalar("loss/total", float(loss), it)
                     writer.add_scalar("lr", sched.get_last_lr()[0], it)
+            if args.eval_every > 0 and it % args.eval_every == 0:
+                el1, _ec = run_eval(model, ev, dev, args)
+                print(f"step_eval {it:5d} eval_l1={el1:.4f}", flush=True)
+                if writer is not None:
+                    writer.add_scalar("eval/l1", el1, it)
+                if (not best) or el1 < best[1]:
+                    best = (it, el1)
+                    if args.save_best:
+                        torch.save({"state_dict": model.state_dict(), "args": vars(args)}, out / "best.pt")
             if it >= args.steps:
                 break
-    # eval
-    model.eval()
-    with torch.no_grad():
-        b = collate([ev[j] for j in range(len(ev))]) if len(ev) <= 4 else collate([ev[j] for j in range(4)])
-        b = {k: v.to(dev) for k, v in b.items()}
-        if args.arch == "pointer":
-            pred = model(b["segs"], b["seg_len"], b["seg_idx"], b["progress"], b["boundary"], b["f0"])
-        else:
-            pred, _ = model(b["segs"], b["seg_mask"], b["seg_idx"], b["progress"], b["boundary"], b["f0"])
-        vv = b["valid"].unsqueeze(1)
-        l1 = (((pred - b["target"]).abs() * vv).sum() / (vv.sum().clamp_min(1.0) * pred.shape[1])).item()
-        # 平凡基线：直接输出目标均值（衡量模型是否比常数更差）
-        # 常数基线：只用有效帧求均值，再算偏差
-        tgt = b["target"]
-        vmask = b["valid"].unsqueeze(1)
-        mu = (tgt * vmask).sum(dim=2, keepdim=True) / vmask.sum(dim=2, keepdim=True).clamp_min(1.0)
-        const = (((tgt - mu).abs() * vmask).sum() / (vmask.sum().clamp_min(1.0) * tgt.shape[1])).item()
-        print(f"eval l1={l1:.4f}  constant_baseline={const:.4f}", flush=True)
+    l1, const = run_eval(model, ev, dev, args)
+    print(f"eval l1={l1:.4f}  constant_baseline={const:.4f}", flush=True)
     torch.save({"state_dict": model.state_dict(), "args": vars(args)}, out / "last.pt")
     print("done", flush=True)
 

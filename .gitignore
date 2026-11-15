@@ -22,7 +22,6 @@ model/setgen.py
 model/discriminator.py
 tools/assemble_overlap.py
 tools/audio_check.py
-tools/build_gtsinger_pairs.py
 tools/build_mismatch.py
 tools/build_pairs.py
 tools/build_prod_pairs.py
@@ -75,3 +74,5 @@ MODEL_VALIDATION.md
 SPEC.md
 docs/*.md
 tests/
+
+export/

@@ -1,4 +1,4 @@
-"""咆哮效果处理器（参考 hifisampler / HiFiUTAU-engine）
+"""咆哮效果处理器（参考同类实现 / 同类引擎）
 
 真正的咆哮 = 高频段（>400Hz）的方波 LFO 音高调制（强度 × ±100 cents），
 而不是幅度调制。旧实现用 ±4% AM，听感几乎无效果（曲线"画了等于没画"）。
@@ -48,7 +48,7 @@ def _apply_pitch_modulation(band: np.ndarray, sr: int,
 
 def apply_growl(audio: np.ndarray, growl_level: np.ndarray, sample_rate: int,
                 f0_curve: np.ndarray = None, hop_length: int = 512) -> np.ndarray:
-    """应用咆哮效果（高频段音高调制，hifisampler 式）
+    """应用咆哮效果（高频段音高调制，参考实现式）
 
     Args:
         audio: 输入音频 (n_samples,)

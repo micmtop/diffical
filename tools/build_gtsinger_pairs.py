@@ -1,6 +1,6 @@
-"""把 GTSinger 片段转成我们的接缝数据集格式。
+"""把 多语语料 片段转成我们的接缝数据集格式。
 
-GTSinger：48kHz mono，每 clip 8s，JSON 含 word/ph（音素）/ph_start/ph_end（秒）/note(MIDI)。
+多语语料：48kHz mono，每 clip 8s，JSON 含 word/ph（音素）/ph_start/ph_end（秒）/note(MIDI)。
 输出与 build_seam_pairs 相同：segs/target/seg_idx/progress/boundary/f0/durations/phone_seg
 按"歌曲目录"划分 train/eval（同歌不跨集）。
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse, json, pathlib, random, sys
 import numpy as np, soundfile as sf
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from canvas import mel_of  # oto-defect variant
+from canvas import mel_of
 import pyworld as pw
 
 SR_IN, SR, HOP = 48000, 44100, 512
@@ -44,7 +44,7 @@ def _resample_seg(seg, n):
     return np.stack([np.interp(xt, xs, seg[b]) for b in range(seg.shape[0])]).astype(np.float32)
 
 
-def build_one(wav_path, json_path, rng, defect_frac=0.4):
+def build_one(wav_path, json_path, rng):
     w, sr = sf.read(str(wav_path), dtype="float32")
     if w.ndim > 1: w = w.mean(1)
     w = resample(w, sr, SR)
@@ -57,39 +57,15 @@ def build_one(wav_path, json_path, rng, defect_frac=0.4):
             if fb - fa >= 2: spans.append((fa, fb)); phones.append(ph)
     if len(spans) < 3: return None
     segs, lens, phone_seg = [], [], {}
-    use_defect = rng.random() < defect_frac
     for i, (a, b) in enumerate(spans):
         a, b = max(0, min(T, a)), max(0, min(T, b))
         if b - a < 2: continue
-        span = b - a
-        if use_defect:
-            kind = rng.choices(["shift", "trunc_end", "trunc_start", "long_con"],
-                               [0.35, 0.30, 0.15, 0.20])[0]
-            ratio = rng.uniform(0.75, 1.30)
-            d = rng.randint(-6, 6) if kind == "shift" else rng.randint(-2, 2)
-        else:
-            kind = "clean"
-            ratio = rng.uniform(0.85, 1.15)
-            d = rng.randint(-2, 2)
-        tail = rng.randint(0, 12) if use_defect else rng.randint(0, 6)
-        nat = max(8, int(round(span * ratio)))
-        s = max(0, min(T - 8, a + d)); e = max(s + 8, min(T, s + nat))
-        seg = target[:, s:e].copy()
-        if kind == "trunc_end" and seg.shape[1] > 12:
-            c = int(round(seg.shape[1] * rng.uniform(0.10, 0.25)))
-            seg = seg[:, :seg.shape[1] - c]
-        elif kind == "trunc_start" and seg.shape[1] > 10:
-            seg = seg[:, rng.randint(1, 3):]
-        elif kind == "long_con" and seg.shape[1] > 12:
-            s2 = max(0, s - rng.randint(2, 6))
-            seg = target[:, s2:s2 + nat].copy()
-            seg = seg[:, :max(8, seg.shape[1] - rng.randint(1, 3))]
-        seg = _resample_seg(seg, span + tail)[:, :span]
-        if use_defect:
-            seg = seg + np.float32(rng.uniform(-3.0, 3.0) / 8.686)
-            seg = seg + ((np.arange(128, dtype=np.float32) - 63.5) / 63.5)[:, None] * np.float32(rng.uniform(-0.25, 0.25))
-        else:
-            seg = seg + np.float32(rng.uniform(-2.0, 2.0) / 8.686)
+        ratio = rng.uniform(0.85, 1.15)
+        d = rng.choice([-2, -1, 0, 0, 1, 2])
+        nat = max(4, int(round((b - a) * ratio)))
+        s = max(0, min(T - 2, a + d)); e = max(s + 4, min(T, s + nat))
+        seg = _resample_seg(target[:, s:e], b - a)
+        seg = seg + np.float32(rng.uniform(-2.0, 2.0) / 8.686)
         phone_seg[i] = len(segs); segs.append(seg.astype(np.float16)); lens.append(b - a)
     S = len(segs)
     if S < 3: return None
@@ -112,12 +88,11 @@ def build_one(wav_path, json_path, rng, defect_frac=0.4):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="data/gtsinger/Chinese")
+    ap.add_argument("--root", default="data/multilingual/Chinese")
     ap.add_argument("--out", default="train/data/gt_seam")
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--shards", type=int, default=1)
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--defect-frac", type=float, default=0.4)
     args = ap.parse_args()
     clips = sorted(pathlib.Path(args.root).rglob("Control_Group/*.wav"))
     songs = sorted({str(p.parent.parent) for p in clips})
@@ -134,7 +109,7 @@ def main():
         if dst.exists(): continue
         rng = random.Random(args.seed * 7 + hash(npz_name) % 100000)
         try:
-            s = build_one(p, p.with_suffix(".json"), rng, args.defect_frac)
+            s = build_one(p, p.with_suffix(".json"), rng)
         except Exception as e:
             print("SKIP", p.name, str(e)[:70]); continue
         if s is None: continue

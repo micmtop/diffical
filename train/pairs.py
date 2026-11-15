@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from backend.overlap import MelOverlapAccumulator  # noqa: E402
 from backend.wav2mel import PitchAdjustableMelSpectrogram  # noqa: E402
-from opencpop import parse_file  # noqa: E402
+from zh_corpus import parse_file  # noqa: E402
 
 SR, HOP, N_FFT, WIN, N_MELS = 44100, 512, 2048, 2048, 128
 FMIN, FMAX = 40.0, 16000.0
@@ -41,7 +41,7 @@ OVERLAP_MS = 83.0          # §3.3 实测 oto overlap 中位
 BOUNDARY_W = 4             # ±50ms
 F0_FLOOR, F0_CEIL = 60.0, 1200.0
 
-ORIGIN_HOP = 128                 # hifisampler 的 origin_hop_size
+ORIGIN_HOP = 128                 # 同类重采样器 的 origin_hop_size
 ORIGIN_MS = ORIGIN_HOP / SR * 1000.0
 HOP_RATIO = HOP // ORIGIN_HOP    # hop512 / hop128 = 4
 
@@ -107,7 +107,7 @@ def stretch(frag: np.ndarray, n: int) -> np.ndarray:
 
 
 def warp_origin(seg128: np.ndarray, n_out: int, con_frac: float = 0.2) -> np.ndarray:
-    """hifisampler 式 warp：hop128 域分段时域映射，直接采到 hop512 网格。
+    """参考实现式 warp：hop128 域分段时域映射，直接采到 hop512 网格。
 
     stretch(t) = t / vel            (t < con)
                = con + (t-con) / r  (t >= con)
@@ -151,12 +151,12 @@ class Bank:
 
     def mel(self, uid: str) -> np.ndarray:
         if uid not in self._mel:
-            self._mel[uid] = mel_of(load_wav(ROOT / "data/opencpop/wavs" / f"{uid}.wav"))
+            self._mel[uid] = mel_of(load_wav(ROOT / "data/zh_corpus/wavs" / f"{uid}.wav"))
         return self._mel[uid]
 
     def mel128(self, uid: str) -> np.ndarray:
         if uid not in self._mel128:
-            self._mel128[uid] = mel128_of(load_wav(ROOT / "data/opencpop/wavs" / f"{uid}.wav"))
+            self._mel128[uid] = mel128_of(load_wav(ROOT / "data/zh_corpus/wavs" / f"{uid}.wav"))
         return self._mel128[uid]
 
 
@@ -176,7 +176,7 @@ def neutral_env(core_a: float, core_b: float, a0: float, a1: float) -> list[tupl
 
 
 def build_one(u, bank: Bank, rng: random.Random) -> dict:
-    wav = load_wav(ROOT / "data/opencpop/wavs" / f"{u.utt_id}.wav")
+    wav = load_wav(ROOT / "data/zh_corpus/wavs" / f"{u.utt_id}.wav")
     target = mel_of(wav)
     T = target.shape[1]
     total_ms = u.total_s * 1000.0
@@ -233,8 +233,8 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    utts = {u.utt_id: u for u in parse_file(ROOT / "data/opencpop/transcriptions.txt")}
-    donors = json.loads((ROOT / "data/opencpop/donors.json").read_text())["ids"]
+    utts = {u.utt_id: u for u in parse_file(ROOT / "data/zh_corpus/transcriptions.txt")}
+    donors = json.loads((ROOT / "data/zh_corpus/donors.json").read_text())["ids"]
     donor_songs = {int(x) // 10**6 for x in donors}
 
     pool = [u for u in utts.values()

@@ -1,6 +1,6 @@
 """pc-nsf-hifigan Vocoder 封装
 
-复用自 hifisampler (util/nsf_hifigan.py)。
+复用自参考实现 (util/nsf_hifigan.py)。
 
 将 Mel 频谱 + F0 转换为高质量波形，支持音高控制。
 """

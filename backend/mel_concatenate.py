@@ -187,7 +187,7 @@ def formant_smooth_transition(mel_a: np.ndarray, mel_b: np.ndarray,
     原实现将 tail/head 都替换为同一个 transition mel（env+detail 的 crossfade），
     导致下游 frequency_dependent_crossfade 收到两个相同输入，per-band 交叉淡入淡出
     完全失效（高频瞬态保留逻辑形同虚设），边界谱通量偏高。
-    参考 hifisampler：不做额外共振峰整形，直接交由 crossfade 处理。
+    参考同类实现：不做额外共振峰整形，直接交由 crossfade 处理。
 
     Args:
         mel_a: 前一个音素的 Mel (n_mels, T1)

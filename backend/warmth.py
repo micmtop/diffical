@@ -65,7 +65,7 @@ def apply_harmonic_compressor(audio: np.ndarray, compression_level: float,
 
     修复（原为 bug）：旧实现用固定绝对阈值 0.35 压缩 |audio|，而 hnsep 分离后的
     谐波分量峰值通常只有 ~0.1（远低于 0.35），导致压缩永远不触发 → HCMP 曲线无效。
-    参考 HiFiUTAU-engine：阈值取相对信号峰值（peak - 22dB），压缩比随 HCMP 线性
+    参考同类实现：阈值取相对信号峰值（peak - 22dB），压缩比随 HCMP 线性
     变化（1:1 → 20:1），并用 RMS 包络 + 软膝 + attack/release 平滑，输出按输入
     RMS 归一化（只压动态、不改变音量）。
 
@@ -89,7 +89,7 @@ def apply_harmonic_compressor(audio: np.ndarray, compression_level: float,
     if peak <= 1e-12:
         return audio.copy()
 
-    # 峰值相对阈值：peak - 22dB（对齐 HiFiUTAU-engine），ratio 1:1 → 20:1
+    # 峰值相对阈值：peak - 22dB（对齐 同类引擎），ratio 1:1 → 20:1
     threshold_db = 20.0 * np.log10(peak + 1e-12) - 22.0
     ratio = 1.0 + comp_factor * 19.0
 
@@ -115,7 +115,7 @@ def _soft_knee_compressor(signal: np.ndarray, threshold_db: float, ratio: float,
                           release_ms: float = 60.0, sr: int = 44100) -> np.ndarray:
     """纯 numpy 软膝压缩器（RMS 包络 + attack/release 平滑）。
 
-    参考 HiFiUTAU-engine 的 _numba_ops.soft_knee_compressor：
+    参考同类实现 的 _numba_ops.soft_knee_compressor：
     - 10ms 滑动窗口 RMS 包络
     - 6dB 软膝：低于阈值无增益，高于阈值按 1/ratio 压缩，膝内 smoothstep 过渡
     - 增益用一阶 IIR 平滑（attack 快、release 慢），避免抽动

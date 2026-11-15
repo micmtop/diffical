@@ -80,7 +80,7 @@ class ModelManager:
         
         使用 origin_hop_size=128 提取 Mel（更细的时间分辨率），
         然后插值到 hop_size=512 给声码器。
-        参考: hifisampler 使用 hop=128 提取，插值到 hop=512
+        参考: 同类重采样器 使用 hop=128 提取，插值到 hop=512
         """
         from .vocoder.wav2mel import PitchAdjustableMelSpectrogram
         config = get_config()
@@ -127,7 +127,7 @@ class ModelManager:
         if not os.path.exists(vocoder_path):
             raise FileNotFoundError(
                 f"Vocoder 模型文件不存在: {vocoder_path}\n"
-                "请从 https://huggingface.co/openvpi/pc-nsf-hifigan 下载。"
+                "请从 https://huggingface.co/声码器发布页 下载。"
             )
 
         providers = ["CPUExecutionProvider"]
@@ -154,7 +154,7 @@ class ModelManager:
         if not os.path.exists(vocoder_path):
             raise FileNotFoundError(
                 f"Vocoder 模型文件不存在: {vocoder_path}\n"
-                "请从 https://huggingface.co/openvpi/pc-nsf-hifigan 下载。"
+                "请从 https://huggingface.co/声码器发布页 下载。"
             )
 
         self.vocoder = NsfHifiGAN(

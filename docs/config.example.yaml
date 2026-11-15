@@ -51,5 +51,5 @@ processing:
 
 server:
   host: "127.0.0.1"
-  port: 8573  # 与 hifisampler 的 8572 错开
+  port: 8573  # 与 同类重采样器 的 8572 错开
   max_workers: 2  # 推理线程池大小

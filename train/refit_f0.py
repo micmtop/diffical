@@ -1,7 +1,7 @@
 """用 RMVPE 重提 F0，写成 sidecar：train/data/f0_rmvpe/<utt>.npy
 
 在算力机（Python 3.13 + rmvpe-onnx）上跑：
-    py -3.13 train/refit_f0.py --pairs train/data/pairs1000 --wavs data/opencpop/wavs --model D:/diffical_neo/rmvpe.onnx
+    py -3.13 train/refit_f0.py --pairs train/data/pairs1000 --wavs data/zh_corpus/wavs --model D:/diffical_neo/rmvpe.onnx
 
 输出与 npz 里 target_mel 的帧数 T 严格对齐（86.1328 fps），float16。
 """
@@ -30,7 +30,7 @@ def resample_to_16k(x: np.ndarray) -> np.ndarray:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pairs", default="train/data/pairs1000")
-    ap.add_argument("--wavs", default="data/opencpop/wavs")
+    ap.add_argument("--wavs", default="data/zh_corpus/wavs")
     ap.add_argument("--model", default="D:/diffical_neo/rmvpe.onnx")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--device", default="cpu")

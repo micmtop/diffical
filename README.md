@@ -1,101 +1,132 @@
 # Diffical
 
-## 简介
+给 OpenUtau 用的歌声渲染后端。模型把每个音素的 mel 片段装配成整句 mel，再交给冻结的
+NSF-HiFiGAN 声码器出声（44.1 kHz，hop 512，128 bins）。
 
-OpenUtau 的实验性歌声渲染器：一个 3.54M 的小模型把每个音素的 mel 片段装配成整句
-log-mel，再由冻结的 PC-NSF-HiFiGAN 声码器出声（44.1 kHz / hop 512 / 128 bins）。
-拼接在 mel 域完成，波形上不做交叉淡化。
-
-v0.1，研究阶段，能跑通但有可听瑕疵；模型权重暂不发布，代码 Apache-2.0。
-
-## 前后端分仓说明
-
-- **后端**（本仓库，Python）：模型、训练、评测、HTTP 服务，是唯一代码源。
-- **前端**：[micmtop/OpenUtau](https://github.com/micmtop/OpenUtau) 的 `diffical`
-  分支，只有 Diffical 渲染器补丁（`OpenUtau.Core/Diffical/` 3 个文件 +
-  `Renderers.cs` 一行注册）；Actions 每天同步上游，并构建 Windows / macOS / Linux。
-- 两者只通过 HTTP 通信（默认 `http://127.0.0.1:8573/`），改后端不用重编译 app。
-
-## 工作原理
+装配由模型完成，不做波形交叉淡化，也没有 overlap accumulator。音素边界是模型的输入条件，
+过渡由模型自己生成。
 
 ```
-OpenUtau ──HTTP /render──▶ 后端：音素切片/拉伸 → mel → PointerGen 装配 → 冻结声码器 → 波形
+OpenUtau --HTTP 8573--> 后端
+                          音素切片 / oto 拉伸（hop-128 源时钟）
+                          -> PointerGen 装配器
+                          -> 冻结声码器
+                          -> 44.1 kHz 波形
 ```
 
-UTAU 声库是「一个音素一段录音」。传统渲染靠交叉淡化拼接，接缝受 oto 标注和两段
-录音的相位/电平影响。PointerGen 在 mel 域看整句上下文和 F0，决定每帧取哪段录音的
-哪个位置、边界附近补什么；声码器冻结，模型只学装配，不重新学音色。
+## 现在做到什么程度
+
+v0.1。已经在 OpenUtau 里完整跑通，日常可用，但仍是研究阶段。
+
+模型在 271 句留出集上的表现：
+
+| 指标 | 输入直读（画布） | 模型 |
+|---|---|---|
+| 整句 log-mel L1 | 0.5186 | 0.4698 |
+| 边界 ±2 帧误差 | 0.6229 | 0.5440 |
+| 接缝处的帧间跳变 | 0.422 | 0.340 |
+
+作为参照，同一批真实录音自己的接缝跳变是 0.442。模型输出的接缝比真实录音更平（0.77 倍），
+说明它没有留下比自然演唱更粗糙的接缝。
+
+已知不足：
+
+- 声码器在句首句尾有短促低频冲击，属于声码器本身的边界行为，mel 模型消不掉。
+- 长音依赖源素材。源内容静态时，拉伸后听起来会发直。
+- 坏 oto 只能部分补偿。已经被 oto 切掉的内容补不回来。
+
+## 性能
+
+纯 CPU（onnxruntime CPUExecutionProvider，Mac M 系列），三次预热后取平均：
+
+| 请求 | 音频时长 | 端到端耗时 | RTF |
+|---|---|---|---|
+| 短句 | 1.70 s | 1.64 s | 0.97 |
+| 长句 | 7.38 s | 2.49 s | 0.34 |
+
+分组件：
+
+| 组件 | 1 s 音频 | 7.4 s 音频 | 17.4 s 音频 |
+|---|---|---|---|
+| 声码器 | 244 ms | 2.21 s | 5.29 s |
+| 装配器（ONNX） | 4.9 ms | 23 ms | 52 ms |
+
+RTF 是渲染耗时除以音频时长，小于 1 表示比实时快。声码器占大头，约 0.24–0.30 RTF，
+而且随长度基本线性；装配器可以忽略。三秒以上的句子能实时渲染，一秒级的短句受固定开销
+影响，接近但不稳定低于 1。OpenUtau 会缓存每个乐句的 wav，重复播放不重新渲染。
+
+要进一步加速只能从声码器入手。换更快的声码器会牵动音质和许可，目前没有做。
 
 ## 模型
 
-`model/pointer.py` 的 PointerGen：3.54M 参数（`c=416`，`n_ctx=3`）。
+PointerGen，3.54M 参数，`c=416`，`n_ctx=3`。
 
-- 输入 `segs / seg_len / seg_idx / progress / boundary / f0`
-- 输出 `gather_seg(segs, τ) + tanh(residual)`，`τ = progress + tanh(Δτ) · 0.5`
+输入：`segs [S,128,L]`、`seg_len`、`seg_idx`、`progress`、`boundary`、`f0`。
+输出：`gather_seg(segs, tau) + tanh(residual)`，其中 `tau = progress + tanh(dtau) * 0.5`，
+模型可以在片段内移动读取位置。
 
-训练口径：`target` 是原录音 mel；片段只取自目标录音自身；40% 的句子注入 oto 式缺陷
-（偏移/截短/裁头/长辅音）；F0 用 pyworld 从音频提取，不用 MIDI 台阶。
+训练数据用同一段录音自己的切片构造，按 40% 比例注入 oto 式缺陷（起点偏移、尾部截断、
+头部裁切、长辅音占窗），其余保持干净。目标是原录音的 mel。
 
-## 下载安装使用
+训练脚本每 1000 步在固定留出集上评估并保存 best 权重。数据审计脚本检查训练/验证是否
+重叠、字段是否完整，红了一律不训。
 
-**声码器**：从 [openvpi/pc-nsf-hifigan](https://huggingface.co/openvpi/pc-nsf-hifigan)
-下载 `pc_nsf_hifigan_44.1k_hop512_128bin_2025.02`，放到 `models/`（`model.onnx` +
-`config.json`）。许可 CC BY-NC-SA 4.0，不可商用。
-
-**后端**：
-
-```bash
-pip install -r requirements.txt
-cp docs/config.example.yaml docs/config.yaml   # 改声码器路径、device
-python -m backend.server                        # http://127.0.0.1:8573
-```
-
-**OpenUtau**：用 fork 的 Actions artifact（`OpenUtau-win-x64` / `-osx-arm64` /
-`-linux-x64`），或自行编译 `diffical` 分支；渲染器选 `DIFFICAL`。
-
-**声库**：标准 UTAU 声库（含 `oto.ini`），放进 OpenUtau 的 Singers 目录，macOS 默认
-`~/Library/OpenUtau/Singers/`。
-
-**连接**：OpenUtau 会自动拉起后端，找不到时设 `DIFFICAL_BACKEND_PATH` 和
-`DIFFICAL_PYTHON`；也可以先手动启动后端。
-
-**模型权重**：未发布。要用模型装配（`DIFFICAL_ENGINE=model`）需要自训检查点，再用
-`DIFFICAL_POINTER_CKPT` 指定；不设时走 legacy 拼接。
-
-## 自训练
-
-```bash
-python tools/build_oto_pairs.py --out train/data/oto_full          # OpenCpop
-python tools/build_oto_gtsinger.py --root data/gtsinger/Chinese --out train/data/oto_full
-
-python -m train.train_set --arch pointer --width 416 --pairs train/data/oto_full \
-  --steps 25000 --batch 4 --device cuda --amp --out train/ckpt_oto_full
-```
-
-数据要求：片段来自目标录音自身；F0 从音频提取；`target` 是原录音 mel；训练和推理
-条件一致（`progress` 定义、`boundary` 宽度、F0 清理阈值）。
-
-评估：
-
-```bash
-python tools/eval_set.py --ckpt <ckpt> --data <pairs> --split eval --n 24
-python tools/render_case.py --case <case.json> --engine model --out model.wav
-```
-
-## 仓库结构
+## 目录
 
 | 路径 | 内容 |
 |---|---|
-| `backend/` | HTTP 服务、渲染器、音素/oto 处理、声码器封装 |
-| `model/pointer.py` | PointerGen 与 `load_pointer` |
-| `train/` | 数据集与训练循环 |
-| `tools/` | 数据构造、评估、案例渲染 |
-| `docs/config.example.yaml` | 配置模板 |
+| `backend/` | HTTP 服务、渲染器、音素处理、声码器封装 |
+| `model/` | PointerGen |
+| `tools/` | 数据构造、渲染、评估、ONNX 导出 |
+| `train/` | 训练循环与数据加载 |
+| `docs/` | 配置模板 |
+| `export/` | ONNX 产物（本地生成，不入库） |
 
-数据集、模型权重、渲染音频、OpenUtau 构建产物不在仓库里。
+## 开始
 
-## 许可
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 
-- 代码：Apache-2.0，见 [LICENSE](LICENSE)
-- 声码器权重：CC BY-NC-SA 4.0，不可商用，不随仓库分发；见 [NOTICE](NOTICE)
-- 数据集、声库：各自遵循原始许可；Diffical 模型权重暂不发布
+cp docs/config.example.yaml docs/config.yaml
+# 编辑 docs/config.yaml：声码器、hnsep、设备
+
+python -m backend.server            # 监听 127.0.0.1:8573
+```
+
+声码器权重不随仓库分发，按 `docs/config.example.yaml` 里的路径放好。
+
+OpenUtau 侧的接入代码单独维护，见 `NOTICE` 里的归属说明。
+
+## 训练
+
+构造器需要自备语料与转写，默认读取 `data/wavs` 和 `data/transcriptions.txt`：
+
+```bash
+python tools/build_pairs.py --wavs-dir data/wavs --transcriptions data/transcriptions.txt \
+  --out train/data/pairs --shard 0 --shards 2
+python tools/build_pairs_multilingual.py --root data/multilingual --out train/data/pairs
+
+python -m train.train_set --arch pointer --width 416 --pairs train/data/pairs \
+  --steps 20000 --batch 4 --lr 1e-4 --device cuda --amp --init ckpt_base/last.pt \
+  --lambda-b 8 --eval-every 1000 --save-best --out ckpt_new
+```
+
+## ONNX
+
+Rust 或其它运行时用 ONNX 推理：
+
+```bash
+python tools/export_onnx.py --ckpt train/ckpt_new/best.pt --out export/pointer.onnx
+```
+
+导出脚本会检查动态 shape 下的数值一致性（阈值 1e-4），并把 ckpt/onnx 的 sha256、输入输出、
+mel 契约写进同名 json。当前实测 parity 1e-5 量级，CPU 上 1 秒音频的装配约 5 ms。
+
+## 权重与许可
+
+- 代码：Apache-2.0，见 `LICENSE`。
+- 模型权重：CC BY-NC-SA 4.0，与所用声码器一致。不随仓库分发，见 GitHub Releases。
+- 数据集、声码器权重、声库：各自遵循原始许可，不随本仓库分发。
+
+权重是训练产物，包含数据集与声码器的衍生关系，再分发时保留同样的非商用与署名条款。

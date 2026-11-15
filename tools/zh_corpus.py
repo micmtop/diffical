@@ -1,4 +1,4 @@
-"""OpenCpop 标注解析与 P0.3 边界选例。
+"""中文语料 标注解析与 P0.3 边界选例。
 
 字段（7 段 | 分隔）：
     name | lyrics | ph_seq | note_pitch | midi_dur | ph_dur | is_slur
@@ -138,12 +138,12 @@ if __name__ == "__main__":
     import sys
 
     root = pathlib.Path(__file__).resolve().parents[1]
-    utts = parse_file(root / "data/opencpop/transcriptions.txt")
+    utts = parse_file(root / "data/zh_corpus/transcriptions.txt")
     print(f"utterances: {len(utts)}")
     inv = collections.Counter(p for u in utts for p in u.phones)
     print(f"phoneme inventory ({len(inv)}):", " ".join(sorted(inv)))
     sel = select(utts)
-    out = root / "data/opencpop/selected12.json"
+    out = root / "data/zh_corpus/selected12.json"
     out.write_text(json.dumps(sel, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"selected: {len(sel)} -> {out}")
     for s in sel:

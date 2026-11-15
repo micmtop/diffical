@@ -1,6 +1,6 @@
 """通用工具函数
 
-复用自 hifisampler (util/utils.py)。
+复用自参考实现 (util/utils.py)。
 """
 
 import os

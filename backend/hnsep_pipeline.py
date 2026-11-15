@@ -194,7 +194,6 @@ class HarmonicNoiseProcessor:
 
         if breath_level is not None and len(breath_level) > 0:
             breath_factor = self._interpolate_param(breath_level, n_samples)
-            # OpenUTAU 曲线默认 breathiness=0（不是 50）。旧实现 (x-50)/100 会把
             # 默认 0 变成 -0.5 -> 噪声被清零（默认渲染音质烂的根因之一）。
             # 修正：0 = 中性（不改噪声），100 = 最大气声。
             breath_factor = breath_factor / 100.0

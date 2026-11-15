@@ -1,6 +1,6 @@
 """PitchAdjustableMelSpectrogram
 
-复用自 hifisampler (util/wav2mel.py)，源自 openvpi/SingingVocoders。
+标准 mel 前端，参数与声码器对齐。
 
 支持 key_shift（按半音调整频谱）和 speed（调整帧移）。
 """

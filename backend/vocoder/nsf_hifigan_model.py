@@ -1,6 +1,6 @@
 """pc-nsf-hifigan Generator 模型
 
-复用自 hifisampler (util/nsf_hifigan.py)。
+复用自参考实现 (util/nsf_hifigan.py)。
 """
 
 import json

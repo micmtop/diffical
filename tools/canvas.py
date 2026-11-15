@@ -14,7 +14,7 @@ import numpy as np, soundfile as sf, torch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from opencpop import parse_file  # noqa: E402
+from zh_corpus import parse_file  # noqa: E402
 
 SR, HOP, N_FFT, N_MELS = 44100, 512, 2048, 128
 FRAME_MS = HOP / SR * 1000.0
@@ -82,8 +82,8 @@ def canvas_from_segments(target: np.ndarray, spans, *, jitter=0, cut_ratio=0.0, 
 
 def main() -> int:
     utt = sys.argv[1] if len(sys.argv) > 1 else "2001000033"
-    u = {x.utt_id: x for x in parse_file(ROOT / "data/opencpop" / "transcriptions.txt")}[utt]
-    wav, sr = sf.read(str(ROOT / "data/opencpop" / "wavs" / f"{utt}.wav"), dtype="float32")
+    u = {x.utt_id: x for x in parse_file(ROOT / "data/zh_corpus" / "transcriptions.txt")}[utt]
+    wav, sr = sf.read(str(ROOT / "data/zh_corpus" / "wavs" / f"{utt}.wav"), dtype="float32")
     assert sr == SR
     target = mel_of(wav)
     T = target.shape[1]

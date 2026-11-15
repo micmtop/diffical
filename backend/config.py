@@ -72,7 +72,7 @@ class ProcessingConfig:
 class ServerConfig:
     """HTTP 服务器配置"""
     host: str = "127.0.0.1"
-    port: int = 8573  # 与 hifisampler 的 8572 错开
+    port: int = 8573  # 与 默认端口
     max_workers: int = 2  # 推理线程池大小
 
 

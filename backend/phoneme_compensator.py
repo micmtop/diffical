@@ -409,9 +409,7 @@ class PhonemeCompensator:
         # 2026-08-04: 跨语种补偿已归档暂停。此前该逻辑会在正常 VCV/単独音渲染中
         # 误触发（如 oto 路径经 find_wav_file/补偿分支解析时，target=文件名
         # "おれるりら" vs matched 不一致），给每个音素算出非默认 pitch_shift/
-        # formant_shift -> 整句移调/音色改变（用户实测"音色都变了/更严重"），
         # 且逐音素计算开销大（8 音素句 64s）。统一返回默认（无调整）。
-        # 注意：必须放在任何特征计算之前，否则仍会执行昂贵的特征分析。
         return {
             'formant_shift': 1.0,
             'pitch_shift_cent': 0.0,
