@@ -39,3 +39,10 @@ __pycache__/
 
 # Logs
 *.log
+
+# Internal working documents and dev-only tests (kept local, not published)
+INTEGRATION.md
+MODEL_VALIDATION.md
+SPEC.md
+docs/*.md
+tests/

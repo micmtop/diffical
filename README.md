@@ -32,7 +32,6 @@ v0.1，研究阶段。已经能在 OpenUtau 里完整跑通，但仍有可听瑕
   同时不拖累 oto 标得好的声库。
 - **不做输出「化妆」**：没有每音符响度匹配、没有在渲染波形上做包络增益、没有 EQ/压缩；
   OpenUtau 的 VOL/envelope 不做后置增益，整句只做一个常数 RMS 归一化。
-- **客观审计**：`tests/test_algorithm_audit.py`、`tests/test_dataset_audit.py`。
 
 ## 仓库结构
 
@@ -42,8 +41,7 @@ v0.1，研究阶段。已经能在 OpenUtau 里完整跑通，但仍有可听瑕
 | `model/` | PointerGen（`pointer.py`）与早期基线（`net.py`、`setgen.py`） |
 | `tools/` | 数据集构造（`build_*_pairs.py`）、渲染/评估/诊断脚本 |
 | `train/` | 训练循环（`train_set.py`）、数据加载、损失 |
-| `tests/` | 算法不变量与数据集审计 |
-| `docs/` | 配置模板、设计笔记、根因分析 |
+| `docs/` | 配置模板 |
 
 **不在仓库里**：数据集、模型权重、渲染音频、修改版 OpenUtau App。
 训练用的数据集不可再分发，权重发布前需要单独确认数据集许可。
@@ -86,13 +84,6 @@ python -m train.train_set --arch pointer --width 416 --pairs train/data/oto_full
 - 片段只能取自**目标录音本身**（内容可达），不能用别的 take 的同音素当目标。
 - F0 从音频提取（pyworld harvest），不能用曲谱 MIDI 台阶。
 - `target` 永远是原录音的 mel。
-
-## 测试
-
-```bash
-python tests/test_algorithm_audit.py      # 装配不变量 A–F
-python tests/test_dataset_audit.py        # 数据集检查
-```
 
 ## 已知局限
 
