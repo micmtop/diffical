@@ -124,6 +124,14 @@ def get_config() -> DifficalConfig:
     global _config
     if _config is None:
         config_path = os.environ.get("DIFFICAL_CONFIG", "config.yaml")
+        if not os.path.exists(config_path):
+            # 仓库约定：模板在 docs/config.example.yaml，用户复制成 docs/config.yaml。
+            # 从仓库根目录启动时没传 DIFFICAL_CONFIG 也能找到它。
+            repo_docs = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "docs", "config.yaml")
+            if os.path.exists(repo_docs):
+                config_path = repo_docs
         if os.path.exists(config_path):
             _config = DifficalConfig.from_yaml(config_path)
         else:

@@ -108,7 +108,8 @@ def build_one(u, rng, defect_frac=0.4):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--utts", required=True)
+    ap.add_argument("--utts", default="",
+                    help="含 *.npz 的目录，用它枚举句 id；省略则处理 transcriptions.txt 里的全部句子")
     ap.add_argument("--out", default="train/data/oto_v1")
     ap.add_argument("--split", default="train")
     ap.add_argument("--shard", type=int, default=0)
@@ -118,16 +119,17 @@ def main():
     args = ap.parse_args()
     out = pathlib.Path(args.out) / args.split
     out.mkdir(parents=True, exist_ok=True)
-    files = sorted(pathlib.Path(args.utts).glob("*.npz"))[args.shard:: args.shards]
+    files = sorted(pathlib.Path(args.utts).glob("*.npz")) if args.utts else []
     utts = {u.utt_id: u for u in parse_file("data/opencpop/transcriptions.txt")}
+    ids = [f.stem for f in files] if files else sorted(utts)
     n = 0
-    for f in files:
-        uid = f.stem
-        if uid not in utts:
+    for uid in ids[args.shard:: args.shards]:
+        u = utts.get(uid)
+        if u is None:
             continue
         rng = random.Random(args.seed * 100003 + hash(uid) % 100000)
         try:
-            s = build_one(utts[uid], rng, args.defect_frac)
+            s = build_one(u, rng, args.defect_frac)
         except Exception as e:
             print("SKIP", uid, str(e)[:80]); continue
         np.savez_compressed(out / f"{uid}.npz", **s); n += 1

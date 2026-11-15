@@ -1,13 +1,14 @@
+# 运行时（后端 + 模型装配）
 numpy>=1.24
 scipy>=1.10
 soundfile>=0.12
-pyworld>=0.3
 PyYAML>=6.0
 torch>=2.0
 onnxruntime>=1.16
-fastapi>=0.110
-uvicorn>=0.27
-librosa>=0.10
-matplotlib>=3.7
-# optional: f0 extraction via RMVPE
-# rmvpe-onnx
+aiohttp>=3.9
+
+# 训练 / 数据集构造（F0 提取）
+pyworld>=0.3
+
+# 可选：旧的气声噪声后处理用到了 librosa；默认渲染路径不调用
+# librosa>=0.10

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse, pathlib, sys
 import torch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from model.pointer import PointerGen, gather_seg, count_params  # noqa: E402
+from model.pointer import gather_seg, count_params, load_pointer  # noqa: E402
 from train.dataset_set import SetDataset, collate  # noqa: E402
 
 
@@ -14,16 +14,13 @@ def main():
     ap.add_argument("--split", default="eval")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--n", type=int, default=6)
-    ap.add_argument("--width", type=int, default=192)
     args = ap.parse_args()
     ds = SetDataset(pathlib.Path(args.data), args.split)
     n = min(args.n, len(ds))
     b = {k: v for k, v in collate([ds[i] for i in range(n)]).items()}
     dev = torch.device(args.device)
     b = {k: v.to(dev) for k, v in b.items()}
-    ck = torch.load(args.ckpt, map_location=dev)
-    model = PointerGen(c=args.width).to(dev)
-    model.load_state_dict(ck["state_dict"]); model.eval()
+    model = load_pointer(args.ckpt, device=dev).to(dev)
     with torch.no_grad():
         pred = model(b["segs"], b["seg_len"], b["seg_idx"], b["progress"], b["boundary"], b["f0"])
         base = gather_seg(b["segs"], b["seg_len"], b["seg_idx"], b["progress"])

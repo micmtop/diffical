@@ -2,8 +2,8 @@
 
 model:
   # pc-nsf-hifigan 官方权重（只读；不替换、不训练、不改 hash）
-  vocoder_path: "./models/pc_nsf_hifigan/model.onnx"
-  vocoder_config_path: "./models/pc_nsf_hifigan/config.json"
+  vocoder_path: "./models/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02/model.onnx"
+  vocoder_config_path: "./models/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02/config.json"
   model_type: "onnx"
 
   # hnsep CascadedNet
