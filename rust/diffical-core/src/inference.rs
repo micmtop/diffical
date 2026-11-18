@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use ort::environment::{init as env_init, Environment};
+use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
@@ -34,10 +35,28 @@ pub struct PointerOnnx {
 impl PointerOnnx {
     pub fn load(path: &Path) -> Result<Self> {
         let env = env_init().build().context("create ort environment")?;
-        let session = Session::builder(&env)?
+        Self::load_with_env(&env, path)
+    }
+
+    /// Reuse a process-wide ONNX Runtime environment. ort allows exactly one
+    /// per process, and the render pipeline needs two sessions (assembler +
+    /// vocoder), so the engine creates it once.
+    pub fn load_with_env(env: &Environment, path: &Path) -> Result<Self> {
+        let session = Session::builder(env)?
+            .with_execution_providers([ort::ep::CPU::default().build()])
+            .unwrap_or_else(|e| e.recover())
+            .with_optimization_level(GraphOptimizationLevel::All)
+            .unwrap_or_else(|e| e.recover())
+            .with_intra_threads(4)
+            .unwrap_or_else(|e| e.recover())
+            .with_inter_threads(2)
+            .unwrap_or_else(|e| e.recover())
             .commit_from_file(path)
             .with_context(|| format!("load {path:?}"))?;
-        Ok(Self { _env: env, session })
+        Ok(Self {
+            _env: env.clone(),
+            session,
+        })
     }
 
     pub fn run(
@@ -59,7 +78,7 @@ impl PointerOnnx {
         ])?;
         let (shape, data) = outputs["mel"].try_extract_tensor::<f32>()?;
         Ok(TensorData {
-            shape: shape.iter().map(|d| *d as i64).collect(),
+            shape: shape.to_vec(),
             data: data.to_vec(),
         })
     }
