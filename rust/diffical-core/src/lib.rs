@@ -4,3 +4,5 @@
 pub mod mel;
 
 pub use mel::{MelFrontend, MelParams};
+
+pub mod inference;
