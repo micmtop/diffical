@@ -1,5 +1,5 @@
 //! Minimal wav IO matching `soundfile.read(dtype="float32")` for the mono,
-//! 16/24-bit PCM voicebanks used by OpenUtau.
+//! 16/24-bit PCM voicebanks used by the host editor.
 //!
 //! Sample-rate conversion is intentionally rejected: every current voicebank
 //! file is 44.1 kHz, and silently resampling with a different filter than

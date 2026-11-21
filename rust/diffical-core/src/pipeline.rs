@@ -1,8 +1,12 @@
 //! Model-path render orchestration:
-//! pitch -> per-phone mel -> assembler -> vocoder -> phrase post-processing.
+//! pitch -> per-phone mel (flags: HN-SEP / g / t / He) -> assembler -> vocoder
+//! -> phrase effects (HG / A) -> post-processing.
 
 use crate::assemble::{build_inputs, seg_norm_from_env, Assembler};
 use crate::config::AudioConfig;
+use crate::effects;
+use crate::flags::PhoneFlags;
+use crate::hnsep::{Hnsep, HnsepCache};
 use crate::mel::MelFrontend;
 use crate::phone::{MelMatrix, PhoneFeature, PhoneProcessor};
 use crate::pitch::{build_pitch_curve, PitchCurve};
@@ -12,7 +16,8 @@ use crate::vocoder::{
     Vocoder,
 };
 use anyhow::{Context, Result};
-use std::path::Path;
+use ort::environment::{init as env_init, Environment};
+use std::path::{Path, PathBuf};
 
 /// Pitch curve + source mel construction, usable without any ONNX model.
 pub struct PhoneStage {
@@ -35,15 +40,107 @@ impl PhoneStage {
     }
 
     pub fn build(
-        &self,
+        &mut self,
         req: &RenderRequest,
         capture_debug: bool,
     ) -> Result<(PitchCurve, Vec<PhoneFeature>)> {
-        let pitch = build_pitch_curve(req, &self.cfg)?;
-        let mut processor = PhoneProcessor::new(&self.cfg, &self.analyzer, &req.singer_path);
-        let features = processor.features(req, &pitch.f0, capture_debug)?;
-        Ok((pitch, features))
+        self.build_with_hnsep(req, capture_debug, None, None)
     }
+
+    /// `hnsep` is passed in (rather than owned) so the session survives across
+    /// renders without making the flag-free path load a 59 MB model.
+    pub fn build_with_hnsep(
+        &mut self,
+        req: &RenderRequest,
+        capture_debug: bool,
+        mut hnsep: Option<&mut Hnsep>,
+        hnsep_cache: Option<&HnsepCache>,
+    ) -> Result<(PitchCurve, Vec<PhoneFeature>)> {
+        let pitch = build_pitch_curve(req, &self.cfg)?;
+        let mut processor = PhoneProcessor::new(
+            &self.cfg,
+            &self.analyzer,
+            &req.singer_path,
+            hnsep.as_deref_mut(),
+            hnsep_cache,
+        );
+        let mut features = processor.features(req, &pitch.f0, capture_debug)?;
+        let mut f0 = pitch.f0.clone();
+        apply_pitch_cents(&mut features, &mut f0);
+        Ok((
+            PitchCurve {
+                total_frames: pitch.total_frames,
+                f0,
+            },
+            features,
+        ))
+    }
+}
+
+/// `t`: add the phone's cent offset to its voiced F0 frames. Overlaps are
+/// resolved in favour of the later phone (it owns the content there).
+fn apply_pitch_cents(features: &mut [PhoneFeature], f0: &mut [f32]) {
+    let mut cents = vec![0f64; f0.len()];
+    let mut any = false;
+    for feat in features.iter() {
+        if feat.pitch_cents == 0.0 || !feat.pitch_cents.is_finite() {
+            continue;
+        }
+        any = true;
+        let start = feat.start_frame.max(0) as usize;
+        if start >= cents.len() {
+            continue;
+        }
+        let end = (start + feat.effect_span_frames).min(cents.len());
+        cents[start..end].fill(feat.pitch_cents);
+    }
+    if !any {
+        return;
+    }
+    for (i, value) in f0.iter_mut().enumerate() {
+        if cents[i] != 0.0 && *value > 0.0 {
+            *value = (*value as f64 * 2f64.powf(cents[i] / 1200.0)) as f32;
+        }
+    }
+    for feat in features.iter_mut() {
+        if feat.pitch_cents == 0.0 {
+            continue;
+        }
+        let ratio = 2f64.powf(feat.pitch_cents / 1200.0) as f32;
+        for value in &mut feat.f0 {
+            if *value > 0.0 {
+                *value *= ratio;
+            }
+        }
+    }
+}
+
+/// Per-frame `HG` / `A` curves from the phone flags (later phones win overlaps).
+fn phrase_effect_curves(
+    features: &[PhoneFeature],
+    total_frames: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let mut growl = vec![0f32; total_frames];
+    let mut amplitude = vec![0f32; total_frames];
+    for feat in features {
+        let flags = &feat.flags;
+        let start = feat.start_frame.max(0) as usize;
+        if start >= total_frames {
+            continue;
+        }
+        let end = (start + feat.effect_span_frames).min(total_frames);
+        let growl_value = flags.growl() as f32;
+        if growl_value > 0.5 {
+            for slot in &mut growl[start..end] {
+                *slot = slot.max(growl_value);
+            }
+        }
+        let amplitude_value = flags.amplitude_mod() as f32;
+        if amplitude_value != 0.0 {
+            amplitude[start..end].fill(amplitude_value);
+        }
+    }
+    (growl, amplitude)
 }
 
 pub struct Rendered {
@@ -61,12 +158,15 @@ pub struct RenderEngine {
     assembler: Assembler,
     vocoder: Vocoder,
     seg_norm: bool,
+    env: Environment,
+    hnsep_path: Option<PathBuf>,
+    hnsep: Option<Hnsep>,
+    hnsep_cache: Option<HnsepCache>,
 }
 
 impl RenderEngine {
     pub fn new(assembler_path: &Path, vocoder_path: &Path) -> Result<Self> {
-        let cfg = AudioConfig::default();
-        Self::with_config(cfg, assembler_path, vocoder_path)
+        Self::with_config_hnsep(AudioConfig::default(), assembler_path, vocoder_path, None)
     }
 
     pub fn with_config(
@@ -74,8 +174,32 @@ impl RenderEngine {
         assembler_path: &Path,
         vocoder_path: &Path,
     ) -> Result<Self> {
+        Self::with_config_hnsep(cfg, assembler_path, vocoder_path, None)
+    }
+
+    /// `hnsep_path` is the exported HN-SEP mask network; it is only loaded on
+    /// the first render whose phones actually use `Hb`/`Hv`/`Ht`.
+    pub fn with_hnsep(
+        assembler_path: &Path,
+        vocoder_path: &Path,
+        hnsep_path: Option<PathBuf>,
+    ) -> Result<Self> {
+        Self::with_config_hnsep(
+            AudioConfig::default(),
+            assembler_path,
+            vocoder_path,
+            hnsep_path,
+        )
+    }
+
+    pub fn with_config_hnsep(
+        cfg: AudioConfig,
+        assembler_path: &Path,
+        vocoder_path: &Path,
+        hnsep_path: Option<PathBuf>,
+    ) -> Result<Self> {
         let phone = PhoneStage::new(cfg.clone())?;
-        let env = ort::environment::init()
+        let env = env_init()
             .build()
             .context("create ort environment")?;
         let assembler = Assembler::load_with_env(&env, assembler_path, cfg.n_mels)?;
@@ -86,16 +210,56 @@ impl RenderEngine {
             assembler,
             vocoder,
             seg_norm: seg_norm_from_env(),
+            env,
+            hnsep_path,
+            hnsep: None,
+            hnsep_cache: None,
         })
+    }
+
+    fn ensure_hnsep(&mut self, req: &RenderRequest) -> Result<()> {
+        if self.hnsep.is_some() {
+            return Ok(());
+        }
+        let needs = req
+            .phones
+            .iter()
+            .any(|p| PhoneFlags::from_values(&p.flags).hnsep().is_some());
+        if !needs {
+            return Ok(());
+        }
+        let path = self.hnsep_path.as_ref().context(
+            "phone flags request HN-SEP (Hb/Hv/Ht) but no model path was given \
+             (--hnsep <onnx> or DIFFICAL_HNSEP)",
+        )?;
+        let started = std::time::Instant::now();
+        self.hnsep = Some(Hnsep::load_with_env(&self.env, path)?);
+        self.hnsep_cache = Some(HnsepCache::default());
+        if std::env::var_os("DIFFICAL_TIMING").is_some() {
+            eprintln!(
+                "[timing] hnsep load: {:.1} ms",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        Ok(())
     }
 
     pub fn render(&mut self, req: &RenderRequest, capture_debug: bool) -> Result<Rendered> {
         let timing = std::env::var_os("DIFFICAL_TIMING").is_some();
         let stage = std::time::Instant::now();
+        self.ensure_hnsep(req)?;
 
-        let (pitch, features) = self.phone.build(req, capture_debug)?;
+        let (pitch, features) = self.phone.build_with_hnsep(
+            req,
+            capture_debug,
+            self.hnsep.as_mut(),
+            self.hnsep_cache.as_ref(),
+        )?;
         if timing {
-            eprintln!("[timing] phones: {:.1} ms", stage.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "[timing] phones: {:.1} ms",
+                stage.elapsed().as_secs_f64() * 1000.0
+            );
         }
         let stage = std::time::Instant::now();
         let total_frames = pitch.total_frames;
@@ -128,6 +292,33 @@ impl RenderEngine {
         sanitize(&mut samples);
         gap_gate(&mut samples, &features, total_frames, &self.cfg);
         sanitize(&mut samples);
+
+        // Phrase effects: HG growl, then A pitch-following amplitude. The
+        // flag-free path skips the curve allocation entirely.
+        let has_effects = features
+            .iter()
+            .any(|f| f.flags.growl() > 0.5 || f.flags.amplitude_mod() != 0.0);
+        if has_effects {
+            let (growl_curve, amplitude_curve) = phrase_effect_curves(&features, total_frames);
+            if let Some(processed) = effects::growl(
+                &samples,
+                &growl_curve,
+                &pitch.f0,
+                self.cfg.sample_rate,
+                self.cfg.hop_size,
+            ) {
+                samples = processed;
+            }
+            if let Some(processed) = effects::pitch_amplitude(
+                &samples,
+                &amplitude_curve,
+                &pitch.f0,
+                self.cfg.sample_rate,
+                self.cfg.hop_size,
+            ) {
+                samples = processed;
+            }
+        }
 
         let expected_samples =
             (((req.duration_ms + req.leading_ms) / 1000.0) * self.cfg.sample_rate as f64)

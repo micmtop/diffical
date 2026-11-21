@@ -220,6 +220,62 @@ impl MelFrontend {
                 *slot = spec[k].norm();
             }
         }
+        self.project(&mags, frames, bins)
+    }
+
+    /// `g` formant shift: the reference scales the STFT window/FFT size by
+    /// `2^(key_shift/12)`, crops/pads the magnitude spectrum back to the
+    /// vocoder's 1025 bins and compensates amplitude by
+    /// `win_size / win_size_new`. `key_shift == 0` is bit-identical to
+    /// [`compute`](Self::compute).
+    pub fn compute_with_key_shift(&self, wav: &[f32], key_shift: f64) -> Result<Vec<f32>> {
+        if !key_shift.is_finite() || key_shift == 0.0 {
+            return self.compute(wav);
+        }
+        let p = &self.params;
+        anyhow::ensure!(
+            key_shift.abs() <= 12.0,
+            "key shift {key_shift} semitones is out of range"
+        );
+        let factor = 2f64.powf(key_shift / 12.0);
+        let n_fft_new = (p.n_fft as f64 * factor).round().max(8.0) as usize;
+        let win_new = (p.win_size as f64 * factor).round().max(8.0) as usize;
+        anyhow::ensure!(win_new <= n_fft_new, "resized window exceeds FFT size");
+        let pad_left = (win_new - p.hop) / 2;
+        let pad_right = (win_new - p.hop + 1) / 2;
+        let padded = reflect_pad(wav, pad_left, pad_right)?;
+        anyhow::ensure!(
+            padded.len() >= win_new,
+            "signal too short for one {win_new}-sample window"
+        );
+        let frames = 1 + (padded.len() - win_new) / p.hop;
+        let window = hann_window(win_new);
+        let bins_new = n_fft_new / 2 + 1;
+        let bins = p.n_fft / 2 + 1;
+        let scale = p.win_size as f32 / win_new as f32;
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(n_fft_new);
+        let mut spec = vec![Complex32::default(); n_fft_new];
+        let mut mags = vec![0f32; frames * bins];
+        for t in 0..frames {
+            let start = t * p.hop;
+            for i in 0..win_new {
+                spec[i] = Complex32::new(padded[start + i] * window[i], 0.0);
+            }
+            for i in win_new..n_fft_new {
+                spec[i] = Complex32::default();
+            }
+            fft.process(&mut spec);
+            let row = &mut mags[t * bins..(t + 1) * bins];
+            for (k, slot) in row.iter_mut().enumerate() {
+                *slot = if k < bins_new { spec[k].norm() * scale } else { 0.0 };
+            }
+        }
+        self.project(&mags, frames, bins)
+    }
+
+    fn project(&self, mags: &[f32], frames: usize, bins: usize) -> Result<Vec<f32>> {
+        let p = &self.params;
         let mut mel = vec![0f32; p.n_mels * frames];
         for t in 0..frames {
             let row = &mags[t * bins..(t + 1) * bins];

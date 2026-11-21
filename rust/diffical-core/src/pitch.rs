@@ -93,7 +93,7 @@ pub fn build_pitch_curve(req: &RenderRequest, cfg: &AudioConfig) -> Result<Pitch
                 f0: vec![0.0; total_frames],
             });
         }
-        bail!("OpenUtau pitch curve is missing; backend will not invent F0");
+        bail!("request pitch curve is missing; backend will not invent F0");
     }
 
     let pitches: Vec<f64> = req.pitches.clone();

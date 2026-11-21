@@ -1,11 +1,13 @@
 use anyhow::{bail, Context, Result};
 use diffical_core::inference::{IntTensorData, PointerOnnx, TensorData};
 use diffical_core::mel::read_f32;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+mod flags_cmd;
+mod inspect_cmd;
 mod parity;
 mod serve;
+mod stats;
 
 fn read_int_tensor(dir: &Path, name: &str) -> Result<IntTensorData> {
     let shape: serde_json::Value =
@@ -36,35 +38,59 @@ fn read_tensor(dir: &Path, name: &str) -> Result<TensorData> {
     Ok(TensorData { shape, data })
 }
 
-fn flags(args: &[String]) -> Result<HashMap<String, String>> {
-    let mut out = HashMap::new();
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        let Some(name) = arg.strip_prefix("--") else {
-            bail!("unexpected positional argument {arg:?}");
-        };
-        let value = args
-            .get(i + 1)
-            .with_context(|| format!("missing value for --{name}"))?;
-        out.insert(name.to_string(), value.clone());
-        i += 2;
+/// Remove `--name value` from the argument list and return the value.
+fn take_value(args: &mut Vec<String>, name: &str) -> Option<String> {
+    let flag = format!("--{name}");
+    let pos = args.iter().position(|a| *a == flag)?;
+    args.remove(pos);
+    if pos < args.len() {
+        Some(args.remove(pos))
+    } else {
+        None
     }
-    Ok(out)
 }
 
-fn model_path(flags: &HashMap<String, String>, name: &str, env: &str) -> Result<PathBuf> {
-    flags
-        .get(name)
+/// Remove a value-less switch.
+fn take_switch(args: &mut Vec<String>, name: &str) -> bool {
+    let flag = format!("--{name}");
+    if let Some(pos) = args.iter().position(|a| *a == flag) {
+        args.remove(pos);
+        true
+    } else {
+        false
+    }
+}
+
+fn take_positional(args: &mut Vec<String>, index: usize, usage: &str) -> Result<String> {
+    if args.len() <= index {
+        bail!("usage: {usage}");
+    }
+    Ok(args.remove(index))
+}
+
+fn model_path(explicit: Option<String>, env: &str) -> Result<PathBuf> {
+    explicit
         .map(PathBuf::from)
         .or_else(|| std::env::var(env).ok().map(PathBuf::from))
-        .with_context(|| format!("missing --{name} (or ${env})"))
+        .with_context(|| format!("missing model path (CLI flag or ${env})"))
+}
+
+/// `--hnsep`, then `$DIFFICAL_HNSEP`, then `hnsep.onnx` next to the assembler.
+fn resolve_hnsep(explicit: Option<String>, assembler: &Path) -> Option<PathBuf> {
+    if let Some(path) = explicit {
+        return Some(PathBuf::from(path));
+    }
+    if let Some(path) = std::env::var_os("DIFFICAL_HNSEP") {
+        return Some(PathBuf::from(path));
+    }
+    let candidate = assembler.parent()?.join("hnsep.onnx");
+    candidate.is_file().then_some(candidate)
 }
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or_default();
-    let rest = &args[1..];
+    let mut rest = args[1..].to_vec();
     match cmd {
         "mel-parity" => {
             let dir = PathBuf::from(rest.first().context("missing golden dir")?);
@@ -129,30 +155,85 @@ fn main() -> Result<()> {
             }
         }
         "inspect" => {
-            parity::inspect(rest.first().context("usage: inspect <request.json>")?)?;
+            inspect_cmd::inspect(rest.first().context("usage: inspect <request.json>")?)?;
         }
         "phone-parity" => {
-            parity::phone_parity(
-                rest.first().context("usage: phone-parity <request.json> <golden-dir>")?,
-                rest.get(1).context("missing golden dir")?,
-            )?;
+            let hnsep_flag = take_value(&mut rest, "hnsep");
+            let usage = "phone-parity <request.json> <golden-dir> [--hnsep <onnx>]";
+            let request = take_positional(&mut rest, 0, usage)?;
+            let golden = take_positional(&mut rest, 0, usage)?;
+            if !rest.is_empty() {
+                bail!("usage: {usage}");
+            }
+            let hnsep = hnsep_flag.map(PathBuf::from);
+            parity::phone_parity(&request, &golden, hnsep)?;
         }
         "assemble-parity" => {
-            parity::assemble_parity(
-                rest.first()
-                    .context("usage: assemble-parity <request.json> <golden-dir> <assembler.onnx>")?,
-                rest.get(1).context("missing golden dir")?,
-                rest.get(2).context("missing assembler model")?,
-            )?;
+            let hnsep_flag = take_value(&mut rest, "hnsep");
+            let usage = "assemble-parity <request.json> <golden-dir> <assembler.onnx> \
+                         [--hnsep <onnx>]";
+            let request = take_positional(&mut rest, 0, usage)?;
+            let golden = take_positional(&mut rest, 0, usage)?;
+            let assembler = take_positional(&mut rest, 0, usage)?;
+            if !rest.is_empty() {
+                bail!("usage: {usage}");
+            }
+            let hnsep = hnsep_flag.map(PathBuf::from);
+            parity::assemble_parity(&request, &golden, &assembler, hnsep)?;
         }
         "e2e-parity" => {
+            let hnsep_flag = take_value(&mut rest, "hnsep");
+            let usage = "e2e-parity <request.json> <golden-dir> <assembler.onnx> \
+                         <vocoder.onnx> [--hnsep <onnx>]";
+            let request = take_positional(&mut rest, 0, usage)?;
+            let golden = take_positional(&mut rest, 0, usage)?;
+            let assembler = take_positional(&mut rest, 0, usage)?;
+            let vocoder = take_positional(&mut rest, 0, usage)?;
+            if !rest.is_empty() {
+                bail!("usage: {usage}");
+            }
             parity::e2e_parity(
-                rest.first().context(
-                    "usage: e2e-parity <request.json> <golden-dir> <assembler.onnx> <vocoder.onnx>",
-                )?,
-                rest.get(1).context("missing golden dir")?,
-                rest.get(2).context("missing assembler model")?,
-                rest.get(3).context("missing vocoder model")?,
+                &request,
+                &golden,
+                &assembler,
+                &vocoder,
+                hnsep_flag.map(PathBuf::from),
+            )?;
+        }
+        "hnsep-parity" => {
+            let golden = take_positional(&mut rest, 0, "hnsep-parity <golden-dir> <hnsep.onnx>")?;
+            let model = take_positional(&mut rest, 0, "hnsep-parity <golden-dir> <hnsep.onnx>")?;
+            if !rest.is_empty() {
+                bail!("unexpected arguments: {rest:?}");
+            }
+            flags_cmd::hnsep_parity(&golden, &model)?;
+        }
+        "flag-parity" => {
+            let inject = take_value(&mut rest, "inject-flags");
+            let allow_mel_diff = take_switch(&mut rest, "allow-mel-diff");
+            let allow_wav_diff = take_switch(&mut rest, "allow-wav-diff");
+            let hnsep_flag = take_value(&mut rest, "hnsep");
+            let usage = "flag-parity <request.json> <golden-dir> <assembler.onnx> \
+                         <vocoder.onnx> [hnsep.onnx] [--inject-flags \"Hb200g100\"] \
+                         [--allow-mel-diff] [--allow-wav-diff]";
+            let request = take_positional(&mut rest, 0, usage)?;
+            let golden = take_positional(&mut rest, 0, usage)?;
+            let assembler = take_positional(&mut rest, 0, usage)?;
+            let vocoder = take_positional(&mut rest, 0, usage)?;
+            if rest.len() > 1 {
+                bail!("usage: {usage}");
+            }
+            let hnsep = hnsep_flag.or_else(|| rest.first().cloned());
+            let hnsep = resolve_hnsep(hnsep, Path::new(&assembler));
+            flags_cmd::flag_parity(
+                &request,
+                &golden,
+                &assembler,
+                &vocoder,
+                hnsep,
+                inject.as_deref(),
+                allow_mel_diff,
+                allow_wav_diff,
             )?;
         }
         "response-parity" => {
@@ -163,28 +244,32 @@ fn main() -> Result<()> {
             )?;
         }
         "render" => {
-            parity::render_to_wav(
-                rest.first()
-                    .context("usage: render <request.json> <out.wav> <assembler.onnx> <vocoder.onnx>")?,
-                rest.get(1).context("missing output wav")?,
-                rest.get(2).context("missing assembler model")?,
-                rest.get(3).context("missing vocoder model")?,
-            )?;
+            let hnsep_flag = take_value(&mut rest, "hnsep");
+            let usage =
+                "render <request.json> <out.wav> <assembler.onnx> <vocoder.onnx> [--hnsep <onnx>]";
+            let request = take_positional(&mut rest, 0, usage)?;
+            let out = take_positional(&mut rest, 0, usage)?;
+            let assembler = take_positional(&mut rest, 0, usage)?;
+            let vocoder = take_positional(&mut rest, 0, usage)?;
+            if !rest.is_empty() {
+                bail!("usage: {usage}");
+            }
+            let hnsep = resolve_hnsep(hnsep_flag, Path::new(&assembler));
+            parity::render_to_wav(&request, &out, &assembler, &vocoder, hnsep)?;
         }
         "serve" => {
-            let opts = flags(rest)?;
-            let host = opts
-                .get("host")
-                .cloned()
-                .unwrap_or_else(|| "127.0.0.1".to_string());
-            let port: u16 = opts
-                .get("port")
+            let host = take_value(&mut rest, "host").unwrap_or_else(|| "127.0.0.1".to_string());
+            let port: u16 = take_value(&mut rest, "port")
                 .map(|v| v.parse().context("--port must be a u16"))
                 .transpose()?
                 .unwrap_or(8573);
-            let assembler = model_path(&opts, "assembler", "DIFFICAL_ASSEMBLER")?;
-            let vocoder = model_path(&opts, "vocoder", "DIFFICAL_VOCODER")?;
-            serve::run(&host, port, &assembler, &vocoder)?;
+            let assembler = model_path(take_value(&mut rest, "assembler"), "DIFFICAL_ASSEMBLER")?;
+            let vocoder = model_path(take_value(&mut rest, "vocoder"), "DIFFICAL_VOCODER")?;
+            let hnsep = resolve_hnsep(take_value(&mut rest, "hnsep"), &assembler);
+            if !rest.is_empty() {
+                bail!("unexpected arguments: {rest:?}");
+            }
+            serve::run(&host, port, &assembler, &vocoder, hnsep)?;
         }
         "" | "-h" | "--help" => {
             println!(
@@ -196,8 +281,15 @@ fn main() -> Result<()> {
   diffical-cli assemble-parity <request.json> <golden-dir> <assembler.onnx>
   diffical-cli e2e-parity <request.json> <golden-dir> <assembler.onnx> <vocoder.onnx>
   diffical-cli response-parity <render-response.json> <golden-dir>
-  diffical-cli render <request.json> <out.wav> <assembler.onnx> <vocoder.onnx>
-  diffical-cli serve [--host 127.0.0.1] [--port 8573] --assembler <onnx> --vocoder <onnx>"
+  diffical-cli hnsep-parity <golden-dir> <hnsep.onnx>
+  diffical-cli flag-parity <request.json> <golden-dir> <assembler.onnx> <vocoder.onnx> \\
+      [hnsep.onnx] [--inject-flags \\\"Hb200Hv120Ht30g100Dt-50\\\"] \\
+      [--allow-mel-diff] [--allow-wav-diff]
+  diffical-cli render <request.json> <out.wav> <assembler.onnx> <vocoder.onnx> [--hnsep <onnx>]
+  diffical-cli serve [--host 127.0.0.1] [--port 8573] --assembler <onnx> --vocoder <onnx> \\
+      [--hnsep <onnx>]
+
+HN-SEP model path: --hnsep, $DIFFICAL_HNSEP, or hnsep.onnx next to the assembler."
             );
         }
         other => bail!("unknown command {other:?}; run diffical-cli --help"),

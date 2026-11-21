@@ -10,7 +10,7 @@ use diffical_core::protocol::{parse_request, HealthResponse, RenderResultRespons
 use diffical_core::RenderEngine;
 use sha2::{Digest, Sha256};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 
@@ -22,10 +22,18 @@ struct AppState {
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn run(host: &str, port: u16, assembler: &Path, vocoder: &Path) -> Result<()> {
+pub fn run(
+    host: &str,
+    port: u16,
+    assembler: &Path,
+    vocoder: &Path,
+    hnsep: Option<PathBuf>,
+) -> Result<()> {
     let model_sha = model_sha(&[assembler, vocoder])?;
-    let engine = RenderEngine::new(assembler, vocoder)?;
-    println!("models loaded: assembler={assembler:?} vocoder={vocoder:?} sha256={model_sha}");
+    let engine = RenderEngine::with_hnsep(assembler, vocoder, hnsep.clone())?;
+    println!(
+        "models loaded: assembler={assembler:?} vocoder={vocoder:?} hnsep={hnsep:?} sha256={model_sha}"
+    );
     let state = AppState {
         engine: Arc::new(Mutex::new(engine)),
         model_sha: Arc::from(model_sha),

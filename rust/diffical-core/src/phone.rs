@@ -5,49 +5,16 @@
 //! velocity handling, envelope span, vowel stretch mapping, tail silence.
 
 use crate::config::AudioConfig;
+use crate::effects::tension_tilt;
+use crate::flags::{HnsepParams, PhoneFlags};
+use crate::hnsep::{Hnsep, HnsepCache, Separation, SourceKey};
 use crate::mel::MelFrontend;
 use crate::protocol::{RenderPhone, RenderRequest};
-use crate::wav::read_wav_mono;
+pub use crate::source::{interp, MelMatrix};
+use crate::source::SourceLoader;
+use crate::stretch::StretchMap;
 use anyhow::{Context, Result};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-/// Row-major `n_mels x frames` log-mel.
-#[derive(Debug, Clone)]
-pub struct MelMatrix {
-    pub n_mels: usize,
-    pub frames: usize,
-    pub data: Vec<f32>,
-}
-
-impl MelMatrix {
-    pub fn empty(n_mels: usize) -> Self {
-        Self {
-            n_mels,
-            frames: 0,
-            data: Vec::new(),
-        }
-    }
-
-    pub fn from_vec(n_mels: usize, data: Vec<f32>) -> Result<Self> {
-        anyhow::ensure!(
-            n_mels > 0 && data.len() % n_mels == 0,
-            "mel data length {} is not a multiple of {n_mels}",
-            data.len()
-        );
-        Ok(Self {
-            n_mels,
-            frames: data.len() / n_mels,
-            data,
-        })
-    }
-
-    #[inline]
-    pub fn get(&self, band: usize, frame: usize) -> f32 {
-        self.data[band * self.frames + frame]
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct PhoneDebug {
@@ -72,66 +39,16 @@ pub struct PhoneFeature {
     pub segment_len_ms: f64,
     pub tail_silence_frames: usize,
     pub pre_scale: f64,
+    /// Parsed standard flags for this phone.
+    pub flags: PhoneFlags,
+    /// `g` formant shift in semitones applied to the source mel.
+    pub key_shift: f64,
+    /// `t` pitch offset in cents applied to the phrase F0.
+    pub pitch_cents: f64,
+    /// Frames this phone covers in the phrase for phrase-wide effects
+    /// (`HG` growl, `A` amplitude), excluding the 80 ms tail.
+    pub effect_span_frames: usize,
     pub debug: Option<PhoneDebug>,
-}
-
-/// Loads voicebank wav files, caching per render request like `AudioLoader`.
-pub struct SourceLoader {
-    sample_rate: u32,
-    singer_path: String,
-    cache: HashMap<String, Arc<Vec<f32>>>,
-}
-
-impl SourceLoader {
-    pub fn new(sample_rate: u32, singer_path: &str) -> Self {
-        Self {
-            sample_rate,
-            singer_path: singer_path.to_string(),
-            cache: HashMap::new(),
-        }
-    }
-
-    fn resolve(&self, oto_file: &str) -> Option<PathBuf> {
-        if oto_file.is_empty() {
-            return None;
-        }
-        let direct = Path::new(oto_file);
-        if direct.is_absolute() {
-            return direct.is_file().then(|| direct.to_path_buf());
-        }
-        let joined = Path::new(&self.singer_path).join(oto_file);
-        joined.is_file().then_some(joined)
-    }
-
-    /// Missing/unreadable sources degrade to ~100 ms of silence, matching
-    /// `PhoneProcessor._load_wave`; a render must not fail for one bad phone.
-    pub fn load(&mut self, oto_file: &str) -> Arc<Vec<f32>> {
-        if let Some(cached) = self.cache.get(oto_file) {
-            return Arc::clone(cached);
-        }
-        let wave = match self.resolve(oto_file) {
-            Some(path) => match read_wav_mono(&path, self.sample_rate) {
-                Ok(samples) => samples,
-                Err(err) => {
-                    eprintln!("warning: failed to load {path:?}: {err:#}; using silence");
-                    silence(self.sample_rate)
-                }
-            },
-            None => {
-                if !oto_file.is_empty() {
-                    eprintln!("warning: voicebank file not found: {oto_file}; using silence");
-                }
-                silence(self.sample_rate)
-            }
-        };
-        let wave = Arc::new(wave);
-        self.cache.insert(oto_file.to_string(), Arc::clone(&wave));
-        wave
-    }
-}
-
-fn silence(sample_rate: u32) -> Vec<f32> {
-    vec![0.0; (0.1 * sample_rate as f64) as usize]
 }
 
 fn finite_or(value: f64, fallback: f64) -> f64 {
@@ -157,6 +74,8 @@ pub struct PhoneProcessor<'a> {
     cfg: &'a AudioConfig,
     analyzer: &'a MelFrontend,
     loader: SourceLoader,
+    hnsep: Option<&'a mut Hnsep>,
+    hnsep_cache: Option<&'a HnsepCache>,
 }
 
 impl<'a> PhoneProcessor<'a> {
@@ -164,11 +83,15 @@ impl<'a> PhoneProcessor<'a> {
         cfg: &'a AudioConfig,
         analyzer: &'a MelFrontend,
         singer_path: &str,
+        hnsep: Option<&'a mut Hnsep>,
+        hnsep_cache: Option<&'a HnsepCache>,
     ) -> Self {
         Self {
             cfg,
             analyzer,
             loader: SourceLoader::new(cfg.sample_rate, singer_path),
+            hnsep,
+            hnsep_cache,
         }
     }
 
@@ -270,6 +193,10 @@ impl<'a> PhoneProcessor<'a> {
         let n_mels = cfg.n_mels;
         let frame_ms = cfg.frame_ms();
         let origin_frame_ms = cfg.origin_frame_ms();
+        let flags = PhoneFlags::from_values(&phone.flags);
+        let key_shift = flags.gender_key_shift();
+        let pitch_cents = flags.pitch_cents();
+        let effect_span_frames = ((ctx.total_span_ms / frame_ms).round() as i64).max(1) as usize;
 
         let mut wave = self.loader.load(&phone.oto_file);
         if wave.is_empty() {
@@ -289,6 +216,10 @@ impl<'a> PhoneProcessor<'a> {
                 segment_len_ms: ctx.total_span_ms,
                 tail_silence_frames: 0,
                 pre_scale: 1.0,
+                flags: flags.clone(),
+                key_shift,
+                pitch_cents,
+                effect_span_frames,
                 debug: None,
             });
         }
@@ -307,16 +238,109 @@ impl<'a> PhoneProcessor<'a> {
 
         let params = self.analyzer.params();
         let padded_len = wave.len() + params.pad_left + params.pad_right;
-        if padded_len >= params.win_size {
-            let source_frames = 1 + (padded_len - params.win_size) / params.hop;
+        let source_frames = if padded_len >= params.win_size {
+            let frames = 1 + (padded_len - params.win_size) / params.hop;
             anyhow::ensure!(
-                source_frames < 500_000,
-                "source wav {:?} is too long for mel analysis ({source_frames} frames)",
+                frames < 500_000,
+                "source wav {:?} is too long for mel analysis ({frames} frames)",
                 phone.oto_file
             );
+            frames
+        } else {
+            0
+        };
+
+        // Source geometry of this phone. The stretch mapping only reads source
+        // times in [start_ms, end_ms], so this is also the wave window that
+        // HN-SEP has to process (plus one STFT window of context on each side).
+        let offset_ms = finite_or(phone.oto_offset, 0.0);
+        let consonant_ms = finite_or(phone.oto_consonant, 0.0);
+        let cutoff_ms = finite_or(phone.oto_cutoff, 0.0);
+        let total_time_ms = source_frames as f64 * origin_frame_ms;
+        let t_orig_ms: Vec<f64> = (0..source_frames)
+            .map(|i| i as f64 * origin_frame_ms + origin_frame_ms / 2.0)
+            .collect();
+        let mut start_ms = offset_ms;
+        let con_ms = start_ms + consonant_ms;
+        let mut end_ms = if cutoff_ms < 0.0 {
+            start_ms + cutoff_ms.abs()
+        } else if cutoff_ms > 0.0 {
+            total_time_ms - cutoff_ms
+        } else {
+            total_time_ms
+        };
+        end_ms = end_ms.min(total_time_ms).max(con_ms);
+        start_ms = start_ms.max(0.0);
+
+        // HN-SEP (`Hb`/`Hv`/`Ht`) works on the source window the phone reads,
+        // before the mel: start/end of the stretch window plus one STFT window
+        // of context on each side. Windows are cached by (path, mtime, start,
+        // end); a cache hit reuses the shared harmonic/noise for that window.
+        //
+        // Production default is window-only separation: it separates just the
+        // window the phone reads, which is ~7x faster on first render. Compared
+        // with whole-file separation the output waveform differs by NCC 0.99992
+        // and 0.11% RMS, so the shorter mask context is not audible.
+        // `DIFFICAL_HNSEP_WHOLE=1` restores whole-file separation for exact
+        // comparison against the Python reference (slower, more memory).
+        let hnsep_params = flags.hnsep();
+        let tension = flags.tension();
+        let mut processed: Option<Vec<f32>> = None;
+        if hnsep_params.is_some() {
+            let Some(session) = self.hnsep.as_deref_mut() else {
+                anyhow::bail!(
+                    "phone {:?} requests HN-SEP flags but no HN-SEP model is configured (--hnsep <onnx>)",
+                    phone.phoneme
+                );
+            };
+            let whole_mode = std::env::var("DIFFICAL_HNSEP_WHOLE")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false);
+            let (w0, w1) = if whole_mode {
+                (0, wave.len())
+            } else {
+                let sr = cfg.sample_rate as f64;
+                let first = ((start_ms / 1000.0) * sr).floor().max(0.0) as usize;
+                let last =
+                    (((end_ms / 1000.0) * sr).ceil().max(0.0) as usize).min(wave.len());
+                // One STFT window of context each side covers every mel frame
+                // the stretch mapping reads.
+                let guard = std::env::var("DIFFICAL_HNSEP_GUARD")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(cfg.n_fft);
+                (first.saturating_sub(guard), (last + guard).min(wave.len()))
+            };
+            if w1 > w0 {
+                let key = self
+                    .loader
+                    .resolved_path(&phone.oto_file)
+                    .and_then(|path| SourceKey::new(&path, w0, w1, cfg.sample_rate));
+                let separation = session.separate_cached(
+                    self.hnsep_cache,
+                    key.as_ref(),
+                    &wave[w0..w1],
+                )?;
+                let mixed = mix_hnsep(&separation, hnsep_params.expect("checked"));
+                if w0 == 0 && w1 == wave.len() {
+                    processed = Some(mixed);
+                } else {
+                    let mut out = wave.as_ref().clone();
+                    out[w0..w1].copy_from_slice(&mixed);
+                    processed = Some(out);
+                }
+            }
         }
-        let mel_orig =
-            MelMatrix::from_vec(n_mels, self.analyzer.compute(&wave)?).context("source mel")?;
+        if tension != 0.0 {
+            let base = processed.take().unwrap_or_else(|| wave.as_ref().clone());
+            processed = Some(tension_tilt(&base, tension, cfg.sample_rate));
+        }
+        let analyzer_wave: &[f32] = processed.as_deref().unwrap_or_else(|| wave.as_ref());
+        let mel_orig = MelMatrix::from_vec(
+            n_mels,
+            self.analyzer.compute_with_key_shift(analyzer_wave, key_shift)?,
+        )
+        .context("source mel")?;
         let orig_n_frames = mel_orig.frames;
         if orig_n_frames == 0 {
             return Ok(PhoneFeature {
@@ -335,32 +359,17 @@ impl<'a> PhoneProcessor<'a> {
                 segment_len_ms: ctx.total_span_ms,
                 tail_silence_frames: 0,
                 pre_scale,
+                flags: flags.clone(),
+                key_shift,
+                pitch_cents,
+                effect_span_frames,
                 debug: capture_debug.then(|| PhoneDebug {
-                    source_wave: wave.as_ref().clone(),
+                    source_wave: analyzer_wave.to_vec(),
                     mel_orig: mel_orig.clone(),
                 }),
             });
         }
 
-        let offset_ms = finite_or(phone.oto_offset, 0.0);
-        let consonant_ms = finite_or(phone.oto_consonant, 0.0);
-        let cutoff_ms = finite_or(phone.oto_cutoff, 0.0);
-        let total_time_ms = orig_n_frames as f64 * origin_frame_ms;
-        let t_orig_ms: Vec<f64> = (0..orig_n_frames)
-            .map(|i| i as f64 * origin_frame_ms + origin_frame_ms / 2.0)
-            .collect();
-
-        let mut start_ms = offset_ms;
-        let con_ms = start_ms + consonant_ms;
-        let mut end_ms = if cutoff_ms < 0.0 {
-            start_ms + cutoff_ms.abs()
-        } else if cutoff_ms > 0.0 {
-            total_time_ms - cutoff_ms
-        } else {
-            total_time_ms
-        };
-        end_ms = end_ms.min(total_time_ms).max(con_ms);
-        start_ms = start_ms.max(0.0);
 
         let velocity = finite_or(phone.velocity, 1.0);
         let vel = 2f64.powf(1.0 - velocity);
@@ -404,29 +413,29 @@ impl<'a> PhoneProcessor<'a> {
 
         let use_hold = stretch_length_ms > 1.0
             && vowel_output_ms > stretch_length_ms * 2.5;
-        let onset_src = stretch_length_ms * 0.45;
-        let onset_tgt = onset_src * 2.5;
+        // `He`: replace the frozen long-note hold with a ping-pong traversal of
+        // the stable part of the source vowel. Active exactly where the hold
+        // would be used and only when the source vowel is long enough (>= 200 ms).
+        let use_loop = flags.long_note_loop() && use_hold && stretch_length_ms >= 200.0;
+        let mapping = StretchMap {
+            vel,
+            start_ms,
+            con_ms,
+            con_vel,
+            scaling_ratio,
+            stretch_length_ms,
+            vowel_output_ms,
+            use_hold,
+            use_loop,
+            loop_start_ms: con_ms + stretch_length_ms * 0.35,
+            loop_span_ms: stretch_length_ms * 0.57,
+            loop_cycle_ms: 2.0 * stretch_length_ms.max(1500.0),
+            onset_src: stretch_length_ms * 0.45,
+            onset_tgt: stretch_length_ms * 0.45 * 2.5,
+        };
+        let hi = start_ms.max(end_ms - origin_frame_ms);
         for (i, &clock) in source_clock.iter().enumerate() {
-            let is_consonant = clock < con_vel;
-            let consonant_mapped = start_ms + clock / vel;
-            let mut vowel_mapped = con_ms + (clock - con_vel) / scaling_ratio;
-            if use_hold {
-                let rel = clock - con_vel;
-                let in_onset = rel < onset_tgt;
-                let onset_map = con_ms + (rel / onset_tgt.max(1e-9)) * onset_src;
-                let hold_tgt = (vowel_output_ms - onset_tgt).max(1e-9);
-                let hold_rel = (rel - onset_tgt).max(0.0);
-                let drift = (hold_rel / hold_tgt).min(1.0);
-                let hold_map = con_ms + stretch_length_ms * (0.45 + drift * 0.52);
-                vowel_mapped = if in_onset { onset_map } else { hold_map };
-            }
-            let value = if is_consonant {
-                consonant_mapped
-            } else {
-                vowel_mapped
-            };
-            let hi = start_ms.max(end_ms - origin_frame_ms);
-            mapped[i] = value.clamp(start_ms, hi);
+            mapped[i] = mapping.source_ms(clock).clamp(start_ms, hi);
             present[i] = clock >= 0.0;
         }
 
@@ -502,51 +511,33 @@ impl<'a> PhoneProcessor<'a> {
             segment_len_ms: total_span_ms + extra_frames as f64 * frame_ms,
             tail_silence_frames: extra_frames,
             pre_scale,
+            flags,
+            key_shift,
+            pitch_cents,
+            effect_span_frames,
             debug: capture_debug.then(|| PhoneDebug {
-                source_wave: wave.as_ref().clone(),
+                source_wave: analyzer_wave.to_vec(),
                 mel_orig,
             }),
         })
     }
 }
 
-/// `np.interp` for a monotonically increasing `xp`.
-fn interp(x: f64, xp: &[f64], fp: &[f32]) -> f32 {
-    if xp.is_empty() {
-        return 0.0;
-    }
-    if x <= xp[0] {
-        return fp[0];
-    }
-    if x >= xp[xp.len() - 1] {
-        return fp[fp.len() - 1];
-    }
-    let mut lo = 0usize;
-    let mut hi = xp.len() - 1;
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
-        if xp[mid] <= x {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let t = (x - xp[lo]) / (xp[hi] - xp[lo]);
-    (fp[lo] as f64 * (1.0 - t) + fp[hi] as f64 * t) as f32
+/// Reference HN-SEP mix: `(1 - breath/100) * harmonic + (voicing/100) * noise`.
+/// At default parameters this is `wave`.
+fn mix_hnsep(separation: &Separation, params: HnsepParams) -> Vec<f32> {
+    let harmonic_gain = 1.0 - params.breath / 100.0;
+    let noise_gain = params.voicing / 100.0;
+    separation
+        .harmonic
+        .iter()
+        .zip(separation.noise.iter())
+        .map(|(h, n)| (harmonic_gain * *h as f64 + noise_gain * *n as f64) as f32)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::interp;
 
-    #[test]
-    fn interp_matches_numpy_endpoints() {
-        let xp = [0.5, 1.5, 2.5];
-        let fp = [10.0, 20.0, 30.0];
-        assert_eq!(interp(-1.0, &xp, &fp), 10.0);
-        assert_eq!(interp(0.5, &xp, &fp), 10.0);
-        assert_eq!(interp(1.0, &xp, &fp), 15.0);
-        assert_eq!(interp(2.5, &xp, &fp), 30.0);
-        assert_eq!(interp(9.0, &xp, &fp), 30.0);
-    }
 }

@@ -2,3 +2,5 @@
 /golden
 /golden_e2e
 /golden_phone_noflags
+/flag_golden
+/golden_hnsep

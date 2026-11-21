@@ -5,13 +5,20 @@
 //! gap gate / duration alignment / edge fade / RMS normalization.
 
 pub mod assemble;
+pub mod biquad;
 pub mod config;
+pub mod effects;
+pub mod flags;
+pub mod hnsep;
 pub mod inference;
 pub mod mel;
 pub mod phone;
 pub mod pipeline;
 pub mod pitch;
 pub mod protocol;
+pub mod runtime;
+pub mod source;
+pub mod stretch;
 pub mod vocoder;
 pub mod wav;
 

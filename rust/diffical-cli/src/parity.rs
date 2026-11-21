@@ -1,47 +1,13 @@
 use anyhow::{bail, Context, Result};
+use crate::stats::{diff_f32, DiffStats};
 use diffical_core::assemble::{build_inputs, Assembler};
 use diffical_core::config::AudioConfig;
+use diffical_core::hnsep::{Hnsep, HnsepCache};
 use diffical_core::mel::read_f32;
 use diffical_core::pipeline::{PhoneStage, RenderEngine};
 use diffical_core::protocol::parse_request;
 use diffical_core::wav::write_wav_f32;
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DiffStats {
-    pub count: usize,
-    pub max: f32,
-    pub mean: f64,
-}
-
-impl DiffStats {
-    fn push(&mut self, diff: f32) {
-        self.count += 1;
-        self.max = self.max.max(diff);
-        self.mean += diff as f64;
-    }
-
-    fn finish(mut self) -> Self {
-        if self.count > 0 {
-            self.mean /= self.count as f64;
-        }
-        self
-    }
-}
-
-pub fn diff_f32(got: &[f32], want: &[f32], label: &str) -> Result<DiffStats> {
-    anyhow::ensure!(
-        got.len() == want.len(),
-        "{label}: length mismatch got {} want {}",
-        got.len(),
-        want.len()
-    );
-    let mut stats = DiffStats::default();
-    for (a, b) in got.iter().zip(want) {
-        stats.push((a - b).abs());
-    }
-    Ok(stats.finish())
-}
 
 fn read_text(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("read {path:?}"))
@@ -69,79 +35,23 @@ fn i64_at(meta: &serde_json::Value, index: usize, key: &str) -> Option<i64> {
     phone_meta(meta, index)?.get(key)?.as_i64()
 }
 
-pub fn inspect(path: &str) -> Result<()> {
-    let req = parse_request(&read_text(Path::new(path))?)?;
-    let cfg = AudioConfig::default();
-    let total_ms = req.duration_ms + req.leading_ms;
-    let total_frames = (total_ms / cfg.frame_ms()).ceil().max(1.0) as usize;
-    let mode = if req.pitches.is_empty() {
-        "missing"
-    } else if req.pitches.len() as f64 >= total_frames as f64 * 0.9
-        && req.pitches.len() as f64 <= total_frames as f64 * 1.1
-    {
-        "per-frame"
-    } else {
-        "5-tick"
-    };
-    println!(
-        "parsed OK: {} phones, {} notes, {:.3} ms total ({} frames @ {:.3} ms)",
-        req.phones.len(),
-        req.notes.len(),
-        total_ms,
-        total_frames,
-        cfg.frame_ms()
-    );
-    println!(
-        "pitch curve: {} points ({mode}); dynamics={} gender={} breathiness={} tone_shift={}",
-        req.pitches.len(),
-        req.dynamics.len(),
-        req.gender.len(),
-        req.breathiness.len(),
-        req.tone_shift.len()
-    );
-    let curve_names: Vec<&str> = req.curves.iter().map(|c| c.0.as_str()).collect();
-    println!(
-        "curves ({}): {}",
-        curve_names.len(),
-        if curve_names.is_empty() {
-            "none".to_string()
-        } else {
-            curve_names.join(", ")
-        }
-    );
-    println!("phones:");
-    for (i, phone) in req.phones.iter().enumerate() {
-        println!(
-            "  {i:>2} {:>6} tone={:<3} start={:>9.3} dur={:>7.3} end={:>9.3} preutter={:>8.3} overlap={:>8.3} vel={:.2} env_pts={} flags={}",
-            format!("{:?}", phone.phoneme),
-            phone.tone,
-            phone.position_ms,
-            phone.duration_ms,
-            phone.end_ms,
-            phone.preutter_ms,
-            phone.overlap_ms,
-            phone.velocity,
-            phone.envelope.len(),
-            phone.flags.len()
-        );
-    }
-    println!("notes:");
-    for (i, note) in req.notes.iter().enumerate() {
-        println!(
-            "  {i:>2} tone={:<3} pos={:>9.3} dur={:>7.3} end={:>9.3} lyric={:?}",
-            note.tone, note.position_ms, note.duration_ms, note.end_ms, note.lyric
-        );
-    }
-    Ok(())
-}
-
-pub fn phone_parity(request_path: &str, golden_dir: &str) -> Result<()> {
+pub fn phone_parity(
+    request_path: &str,
+    golden_dir: &str,
+    hnsep_path: Option<PathBuf>,
+) -> Result<()> {
     let req = parse_request(&read_text(Path::new(request_path))?)?;
     let golden = PathBuf::from(golden_dir);
     let meta = read_meta(&golden)?;
     let cfg = AudioConfig::default();
-    let stage = PhoneStage::new(cfg.clone())?;
-    let (pitch, features) = stage.build(&req, true)?;
+    let mut stage = PhoneStage::new(cfg.clone())?;
+    let mut hnsep = match hnsep_path.as_ref() {
+        Some(path) => Some(Hnsep::load(path)?),
+        None => None,
+    };
+    let cache = hnsep.as_ref().map(|_| HnsepCache::default());
+    let (pitch, features) =
+        stage.build_with_hnsep(&req, true, hnsep.as_mut(), cache.as_ref())?;
 
     let mut mel_all = DiffStats::default();
     let mut f0_all = DiffStats::default();
@@ -273,13 +183,21 @@ pub fn assemble_parity(
     request_path: &str,
     golden_dir: &str,
     assembler_path: &str,
+    hnsep_path: Option<PathBuf>,
 ) -> Result<()> {
     let req = parse_request(&read_text(Path::new(request_path))?)?;
     let golden = PathBuf::from(golden_dir);
     let meta = read_meta(&golden)?;
     let cfg = AudioConfig::default();
-    let stage = PhoneStage::new(cfg.clone())?;
-    let (pitch, features) = stage.build(&req, false)?;
+    let mut stage = PhoneStage::new(cfg.clone())?;
+    let env = diffical_core::runtime::environment()?;
+    let mut hnsep = match hnsep_path.as_ref() {
+        Some(path) => Some(Hnsep::load_with_env(&env, path)?),
+        None => None,
+    };
+    let cache = hnsep.as_ref().map(|_| HnsepCache::default());
+    let (pitch, features) =
+        stage.build_with_hnsep(&req, false, hnsep.as_mut(), cache.as_ref())?;
 
     let mut f0_want = load_golden_f32(&golden, "f0_phrase.f32")?;
     if f0_want.len() < pitch.f0.len() {
@@ -378,7 +296,7 @@ pub fn assemble_parity(
         inputs.seg_count, seg_count, inputs.lmax, pitch.total_frames
     );
 
-    let mut assembler = Assembler::load(Path::new(assembler_path), cfg.n_mels)?;
+    let mut assembler = Assembler::load_with_env(&env, Path::new(assembler_path), cfg.n_mels)?;
     let mel = assembler.assemble(inputs, pitch.total_frames)?;
     let mel_want = load_golden_f32(&golden, "mel_phrase.f32")?;
     let mel_stats = diff_f32(&mel.data, &mel_want, "mel_phrase")?;
@@ -435,10 +353,15 @@ pub fn e2e_parity(
     golden_dir: &str,
     assembler_path: &str,
     vocoder_path: &str,
+    hnsep_path: Option<PathBuf>,
 ) -> Result<()> {
     let req = parse_request(&read_text(Path::new(request_path))?)?;
     let golden = PathBuf::from(golden_dir);
-    let mut engine = RenderEngine::new(Path::new(assembler_path), Path::new(vocoder_path))?;
+    let mut engine = RenderEngine::with_hnsep(
+        Path::new(assembler_path),
+        Path::new(vocoder_path),
+        hnsep_path,
+    )?;
     let rendered = engine.render(&req, false)?;
     let want = load_golden_f32(&golden, "samples.f32")?;
     let trace = &rendered.normalization;
@@ -490,9 +413,15 @@ pub fn render_to_wav(
     out_path: &str,
     assembler_path: &str,
     vocoder_path: &str,
+    hnsep_path: Option<PathBuf>,
 ) -> Result<()> {
-    let req = parse_request(&read_text(Path::new(request_path))?)?;
-    let mut engine = RenderEngine::new(Path::new(assembler_path), Path::new(vocoder_path))?;
+    let mut req = parse_request(&read_text(Path::new(request_path))?)?;
+    let _ = &mut req;
+    let mut engine = RenderEngine::with_hnsep(
+        Path::new(assembler_path),
+        Path::new(vocoder_path),
+        hnsep_path,
+    )?;
     let rendered = engine.render(&req, false)?;
     write_wav_f32(Path::new(out_path), &rendered.samples, engine.cfg.sample_rate)?;
     println!(
