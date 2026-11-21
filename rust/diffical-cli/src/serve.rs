@@ -74,6 +74,9 @@ async fn render(State(state): State<AppState>, body: String) -> impl IntoRespons
     let req = match parse_request(&body) {
         Ok(req) => req,
         Err(err) => {
+            let dump = std::env::temp_dir().join("diffical_bad_request.json");
+            let _ = std::fs::write(&dump, &body);
+            eprintln!("render 400: {err:#}; body saved to {:?}", dump);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": format!("{err:#}"), "type": "request"})),
@@ -81,6 +84,14 @@ async fn render(State(state): State<AppState>, body: String) -> impl IntoRespons
                 .into_response()
         }
     };
+    let flagged = req.phones.iter().filter(|p| !p.flags.is_empty()).count();
+    eprintln!(
+        "render: phones={} flagged={} duration_ms={:.1}",
+        req.phones.len(), flagged, req.duration_ms
+    );
+    for (i, p) in req.phones.iter().enumerate().filter(|(_, p)| !p.flags.is_empty()).take(3) {
+        eprintln!("  flags[{i}]={}", serde_json::to_string(&p.flags).unwrap_or_default());
+    }
     let leading_ms = req.leading_ms;
     let position_ms = req.position_ms;
     let estimated_length_ms = req.duration_ms + req.leading_ms;

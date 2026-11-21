@@ -158,13 +158,6 @@ from .mel_concatenate import pre_echo_suppression
 
 logger = logging.getLogger(__name__)
 
-# 2026-10 baseline policy: AI mel refinement is retained as dead code for
-# future re-evaluation, but cannot be enabled through configuration by accident.
-AI_REFINE_DISABLED = True
-
-
-
-
 def midi_to_hz(midi: float) -> float:
     """MIDI 音数 → Hz"""
     return 440.0 * (2.0 ** ((midi - 69.0) / 12.0))
@@ -751,9 +744,6 @@ class PhraseRenderer:
         self.timing_optimizer = PhonemeTimingOptimizer(sample_rate=self.sr)
         self.timbre_mixer = TimbreMixer(sample_rate=self.sr)
         self._param_cache: Dict[str, np.ndarray] = {}
-        # AI 精修模型（懒加载；None=未加载。配置 refine_enabled+路径时启用）
-        self._refine_session = None
-        self._refine_checked = False
         # HG flag（音素级咆哮）折叠进整句 growl 曲线的段列表: (start_frame, end_frame, value)
         self._phone_growl_segments: List[Tuple[int, int, float]] = []
         # 音素→音频文件查找缓存（同一声库内音素名→文件路径是确定映射，避免重复 os.walk）
@@ -2368,78 +2358,6 @@ class PhraseRenderer:
         constrained = formant_constrain(mel_phrase, ref_mel, strength=0.15)
         return constrained
 
-    def _load_refine_model(self):
-        """懒加载 AI 精修模型（ONNX）。失败回退规则精修并记录。
-
-        模型契约（与 _refine_mel 一致）：
-          输入: mel (1, n_mels, n_frames) float32 log(P)/2 半域；
-                f0 (1, n_frames) float32 Hz（0=清音）；
-                phone_ids (1, n_frames) int32（帧级音素序号，供模型条件化）
-          输出: mel_refined (1, n_mels, n_frames) 同形同域
-        训练约束：不得以任何 UTAU 声库为训练集；最多支持 lora 微调。
-        上线门槛：通过 backend/test_noise_floor.py 三项 + ab_diagnose 全套。
-        """
-        if self._refine_checked:
-            return
-        self._refine_checked = True
-        try:
-            cfg = get_config()
-            if not cfg.model.refine_enabled or not cfg.model.refine_model_path:
-                return
-            import onnxruntime as ort
-            if not os.path.exists(cfg.model.refine_model_path):
-                logger.warning(f"精修模型不存在: {cfg.model.refine_model_path}，回退规则精修")
-                return
-            so = ort.SessionOptions()
-            so.intra_op_num_threads = 2
-            self._refine_session = ort.InferenceSession(
-                cfg.model.refine_model_path, so, providers=["CPUExecutionProvider"])
-            logger.info(f"AI 精修模型已加载: {cfg.model.refine_model_path}")
-        except Exception as e:
-            self._refine_session = None
-            logger.warning(f"精修模型加载失败，回退规则精修: {e}")
-
-    def _build_phone_frame_map(self, n_frames: int) -> np.ndarray:
-        """帧级音素序号映射（int32, -1=无音素覆盖）。供 AI 精修条件化。"""
-        fm = np.full(n_frames, -1, dtype=np.int32)
-        for _pi, _ph in enumerate(self.req.phones):
-            _a = int((_ph.position_ms - self.req.position_ms
-                      + self.req.leading_ms - float(getattr(_ph, 'preutter_ms', 0.0) or 0.0))
-                     / self.frame_ms)
-            _b = int(np.ceil((_ph.end_ms - self.req.position_ms
-                              + self.req.leading_ms) / self.frame_ms))
-            fm[max(0, _a):min(n_frames, _b)] = _pi
-        return fm
-
-    def _refine_mel(self, mel: np.ndarray, f0: np.ndarray) -> np.ndarray:
-        """当前基线直接透传 mel；AI 精修暂时弃用。"""
-        if AI_REFINE_DISABLED:
-            return mel
-        self._load_refine_model()
-        if self._refine_session is not None:
-            try:
-                _pm = self._build_phone_frame_map(mel.shape[1])
-                _out = self._refine_session.run(
-                    ["mel_refined"],
-                    {"mel": mel.astype(np.float32)[np.newaxis],
-                     "f0": f0.astype(np.float32)[np.newaxis],
-                     "phone_ids": _pm[np.newaxis]})[0][0]
-                if _out.shape != mel.shape:
-                    logger.warning(f"精修模型输出形状 {_out.shape} != 输入 {mel.shape}，回退规则精修")
-                else:
-                    return _out.astype(np.float32)
-            except Exception as e:
-                logger.warning(f"精修模型推理失败，回退规则精修: {e}")
-        return self._refine_mel_rule(mel, f0)
-
-    def _refine_mel_rule(self, mel: np.ndarray, f0: np.ndarray) -> np.ndarray:
-        """规则精修（当前为透传——所有后处理已移除）。
-
-        历史：多轮"增强/压制/平衡"后处理经验证均为负优化（频谱失真、
-        底噪、overlap 突变），已全部移除。后续 AI 精修模型将在此接口接入。
-        """
-        return mel
-
     def _synthesize_per_phone(self, phone_features: list, total_frames: int) -> np.ndarray:
         """整句一次 vocode（mel 拼接，用户明确要求，禁止逐音素/禁止波形叠加）。
 
@@ -2459,17 +2377,7 @@ class PhraseRenderer:
         f0 = f0[:n]
         # OpenUtau applies DYN after reading the neutral cached waveform.
 
-        # === AI 精修 mel 钩子（为后续引入预留，当前 no-op） ===
-        # 契约：
-        #   输入: mel (n_mels, n_frames) float32，log(P)/2 半域（自然对数），
-        #         已含 envelope 门控 + dyn；f0 (n_frames,) Hz（0=清音）。
-        #   输出: 同形状同域 mel。允许：谱包络精修（共振峰/泛音平衡/去伪影）。
-        #   禁止：改动帧数、改动 f0、整体电平（LUFS 由归一化统一管）、
-        #         引入用户参数之外的风格（拟人注入禁止回归）。
-        #   训练约束：不得以任何 UTAU 声库为训练集（用户铁律），最多 lora。
-        # 验证：任何接入本钩子的模型必须过 backend/test_noise_floor.py 三项
-        # （间隙底噪/高频保真 vs 源/起音过冲）+ ab_diagnose。
-        mel = self._refine_mel(mel, f0)
+
 
         # 给声码器前后各补 N 帧静音上下文（mel=-80, f0=0），vocode 后按采样精确裁掉，
         # 让片段的截断边界伪影落在被裁掉的静音区。DIFFICAL_VOCODER_PAD=0 可关。

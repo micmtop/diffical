@@ -10,9 +10,6 @@ model:
   hnsep_model_path: "./models/hnsep/vr/model.pt"
   hnsep_config_path: "./models/hnsep/vr/config.yaml"
 
-  # AI mel 精修：暂时弃用，配置也不能重新打开 renderer 的硬开关
-  refine_model_path: ""
-  refine_enabled: false
 
   contentvec_model_path: "./models/contentvec/"
 

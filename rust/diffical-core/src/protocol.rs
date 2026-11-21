@@ -119,6 +119,15 @@ fn one() -> f64 {
 
 pub type Curve = (String, Vec<f64>);
 
+/// Incoming curve: the C# client sends `{abbr, values}` while the Python
+/// client and older captures use `[abbr, values]`. Accept both.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum CurveInput {
+    Tuple((String, Vec<f64>)),
+    Object { abbr: String, values: Vec<f64> },
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RenderRequest {
     #[serde(default)]
@@ -168,7 +177,7 @@ pub struct RenderRequest {
     #[serde(default)]
     pub hcmp: Vec<f64>,
     #[serde(default)]
-    pub curves: Vec<Curve>,
+    pub curves: Vec<CurveInput>,
     #[serde(default)]
     pub singer_path: String,
     #[serde(default)]

@@ -66,7 +66,6 @@ def _runtime_identity() -> dict:
         'config_sha256': hashlib.sha256(encoded).hexdigest(),
         'mel_coherence_width': config.processing.mel_coherence_width,
         'mel_max_compensation_db': config.processing.mel_max_compensation_db,
-        'refine_enabled': config.model.refine_enabled,
     }
 
 

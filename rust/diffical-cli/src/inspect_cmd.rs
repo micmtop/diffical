@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use diffical_core::config::AudioConfig;
 use diffical_core::flags::PhoneFlags;
-use diffical_core::protocol::parse_request;
+use diffical_core::protocol::{parse_request, CurveInput};
 use std::path::Path;
 
 fn read_text(path: &Path) -> Result<String> {
@@ -40,7 +40,14 @@ pub fn inspect(path: &str) -> Result<()> {
         req.breathiness.len(),
         req.tone_shift.len()
     );
-    let curve_names: Vec<&str> = req.curves.iter().map(|c| c.0.as_str()).collect();
+    let curve_names: Vec<String> = req
+        .curves
+        .iter()
+        .map(|c| match c {
+            CurveInput::Tuple((name, _)) => name.clone(),
+            CurveInput::Object { abbr, .. } => abbr.clone(),
+        })
+        .collect();
     println!(
         "curves ({}): {}",
         curve_names.len(),

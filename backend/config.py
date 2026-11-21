@@ -21,10 +21,6 @@ class ModelConfig:
     hnsep_model_path: str = "./models/hnsep/vr/model.pt"
     hnsep_config_path: str = "./models/hnsep/vr/config.yaml"
 
-    # AI mel 精修暂时硬关闭；模型文件/训练数据保留，未来重新立项时再接回。
-    refine_model_path: str = ""
-    refine_enabled: bool = False
-
     # ContentVec（跨语种音素映射和特征提取）
     contentvec_model_path: str = "./models/contentvec/"
 
