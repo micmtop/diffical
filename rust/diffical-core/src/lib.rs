@@ -26,3 +26,5 @@ pub use config::AudioConfig;
 pub use mel::{MelFrontend, MelParams};
 pub use pipeline::{PhoneStage, RenderEngine, Rendered};
 pub use protocol::{parse_request, HealthResponse, RenderRequest, RenderResultResponse};
+
+pub mod ep;

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -22,6 +22,15 @@ struct AppState {
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("{info}");
+        eprintln!("PANIC: {msg}");
+        let path = std::env::temp_dir().join("diffical_panic.log");
+        let _ = std::fs::write(path, &msg);
+    }));
+}
+
 pub fn run(
     host: &str,
     port: u16,
@@ -29,6 +38,7 @@ pub fn run(
     vocoder: &Path,
     hnsep: Option<PathBuf>,
 ) -> Result<()> {
+    install_panic_hook();
     let model_sha = model_sha(&[assembler, vocoder])?;
     let engine = RenderEngine::with_hnsep(assembler, vocoder, hnsep.clone())?;
     println!(
@@ -42,6 +52,7 @@ pub fn run(
         .route("/", get(health))
         .route("/health", get(health))
         .route("/render", post(render))
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -71,6 +82,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 }
 
 async fn render(State(state): State<AppState>, body: String) -> impl IntoResponse {
+    eprintln!("render: body_bytes={}", body.len());
     let req = match parse_request(&body) {
         Ok(req) => req,
         Err(err) => {
@@ -84,6 +96,14 @@ async fn render(State(state): State<AppState>, body: String) -> impl IntoRespons
                 .into_response()
         }
     };
+    if std::env::var_os("DIFFICAL_DUMP_REQUESTS").is_some() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("diffical_req_{ts}.json"));
+        let _ = std::fs::write(path, &body);
+    }
     let flagged = req.phones.iter().filter(|p| !p.flags.is_empty()).count();
     eprintln!(
         "render: phones={} flagged={} duration_ms={:.1}",

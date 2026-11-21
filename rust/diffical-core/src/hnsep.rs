@@ -59,7 +59,11 @@ impl Hnsep {
 
     pub fn load_with_env(env: &Environment, path: &Path) -> Result<Self> {
         let session = Session::builder(env)?
-            .with_execution_providers([ort::ep::CPU::default().build()])
+            .with_execution_providers(crate::ep::providers())
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            .with_auto_device(crate::ep::auto_policy())
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            .with_execution_providers(crate::ep::providers())
             .unwrap_or_else(|e| e.recover())
             .with_optimization_level(GraphOptimizationLevel::All)
             .unwrap_or_else(|e| e.recover())

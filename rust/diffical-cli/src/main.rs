@@ -245,6 +245,9 @@ fn main() -> Result<()> {
         }
         "render" => {
             let hnsep_flag = take_value(&mut rest, "hnsep");
+            if let Some(ep) = take_value(&mut rest, "ep") {
+                std::env::set_var("DIFFICAL_EP", ep);
+            }
             let usage =
                 "render <request.json> <out.wav> <assembler.onnx> <vocoder.onnx> [--hnsep <onnx>]";
             let request = take_positional(&mut rest, 0, usage)?;
@@ -266,6 +269,9 @@ fn main() -> Result<()> {
             let assembler = model_path(take_value(&mut rest, "assembler"), "DIFFICAL_ASSEMBLER")?;
             let vocoder = model_path(take_value(&mut rest, "vocoder"), "DIFFICAL_VOCODER")?;
             let hnsep = resolve_hnsep(take_value(&mut rest, "hnsep"), &assembler);
+            if let Some(ep) = take_value(&mut rest, "ep") {
+                std::env::set_var("DIFFICAL_EP", ep);
+            }
             if let Some(mode) = take_value(&mut rest, "hnsep-mode") {
                 match mode.as_str() {
                     "whole" => std::env::set_var("DIFFICAL_HNSEP_WHOLE", "1"),
@@ -293,7 +299,7 @@ fn main() -> Result<()> {
       [hnsep.onnx] [--inject-flags \\\"Hb200Hv120Ht30g100Dt-50\\\"] \\
       [--allow-mel-diff] [--allow-wav-diff]
   diffical-cli render <request.json> <out.wav> <assembler.onnx> <vocoder.onnx> [--hnsep <onnx>]
-  diffical-cli serve [--host 127.0.0.1] [--port 8573] [--hnsep-mode window|whole] --assembler <onnx> --vocoder <onnx> \\
+  diffical-cli serve [--host 127.0.0.1] [--port 8573] [--ep cpu|auto] [--hnsep-mode window|whole] --assembler <onnx> --vocoder <onnx> \\
       [--hnsep <onnx>]
 
 HN-SEP model path: --hnsep, $DIFFICAL_HNSEP, or hnsep.onnx next to the assembler."

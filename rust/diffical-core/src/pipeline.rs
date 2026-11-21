@@ -271,6 +271,9 @@ impl RenderEngine {
             self.seg_norm,
         )?;
         let mel_phrase = self.assembler.assemble(inputs, total_frames)?;
+        if std::env::var_os("DIFFICAL_DUMP_STAGES").is_some() {
+            dump_stage("mel", &mel_phrase.data, &pitch.f0, mel_phrase.frames, self.cfg.sample_rate)?;
+        }
         if timing {
             eprintln!(
                 "[timing] assemble: {:.1} ms",
@@ -287,6 +290,9 @@ impl RenderEngine {
                 "[timing] vocode: {:.1} ms",
                 stage.elapsed().as_secs_f64() * 1000.0
             );
+        }
+        if std::env::var_os("DIFFICAL_DUMP_STAGES").is_some() {
+            dump_stage("voc", &samples, &[], 0, self.cfg.sample_rate)?;
         }
         let stage = std::time::Instant::now();
         sanitize(&mut samples);
@@ -327,11 +333,16 @@ impl RenderEngine {
         phrase_edge_fade(&mut samples);
 
         let volume_reference = req.phone_volume_reference();
+        let rms_target = std::env::var("DIFFICAL_RMS_TARGET")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| *v > 0.0 && *v < 1.0)
+            .unwrap_or(0.13);
         let normalization = if volume_reference > 0.0 {
             normalize_phrase_rms(
                 &mut samples,
                 self.cfg.sample_rate,
-                0.15 * volume_reference,
+                rms_target * volume_reference,
                 0.95,
             )
         } else {
@@ -362,4 +373,23 @@ impl RenderEngine {
             features,
         })
     }
+}
+
+fn dump_stage(kind: &str, data: &[f32], f0: &[f32], frames: usize, sr: u32) -> Result<()> {
+    let dir = std::env::temp_dir().join("diffical_stages");
+    std::fs::create_dir_all(&dir)?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let base = dir.join(format!("{ts}_{kind}"));
+    let bytes: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
+    std::fs::write(base.with_extension("f32"), bytes)?;
+    if !f0.is_empty() {
+        let fbytes: Vec<u8> = f0.iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(base.with_extension("f0.f32"), fbytes)?;
+    }
+    let meta = format!("{{\"kind\":\"{kind}\",\"len\":{},\"frames\":{frames},\"sample_rate\":{sr}}}", data.len());
+    std::fs::write(base.with_extension("json"), meta)?;
+    Ok(())
 }
