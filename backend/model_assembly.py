@@ -89,16 +89,12 @@ def assemble(phone_features: List[dict], total_frames: int, f0: np.ndarray,
     segs, lens, spans = [], [], []
     geom = []
     for i, (a, b, mel) in enumerate(feats_n):
-        if norm:
-            # 生产段是重叠的：只保留会被 seg_idx 用到的帧，并让 progress 走满 0..1，
-            # 与训练时的段语义一致。
-            used = (feats_n[i + 1][0] - a) if i + 1 < len(feats_n) else (b - a)
-            used = max(2, min(used, mel.shape[1]))
-            seg = mel[:, :used]
-            b_used = a + used
-        else:
-            seg = mel[:, : b - a]
-            b_used = b
+        # 给模型完整窗口：不再裁到下一音素的音频起点。
+        # 之前每段只剩自己音符内容的约四分之一，重叠区的内容直接丢失，
+        # 模型无从学习过渡。现在段与相邻段在重叠区共用帧，由 n_ctx 上下文分支
+        # 同时看到左右邻居。
+        seg = mel[:, : b - a]
+        b_used = b
         segs.append(seg)
         lens.append(seg.shape[1])
         spans.append((a, b_used))
