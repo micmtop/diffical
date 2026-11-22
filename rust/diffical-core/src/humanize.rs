@@ -11,7 +11,7 @@
 //! Same math as `backend/humanize.py`, so both backends agree; HUM = 0 is a
 //! bit-exact no-op.
 
-use crate::protocol::{CurveInput, RenderNote};
+use crate::protocol::{CurveInput, RenderNote, RenderPhone};
 use crate::source::MelMatrix;
 
 pub const ABBR: &str = "HUM";
@@ -155,4 +155,65 @@ pub fn apply(mel: &mut MelMatrix, hum: &[f32], env: &[f32]) {
         }
     }
     let _ = any;
+}
+
+/// HUM from per-phone flags (`["Hu", 40, "humanization"]`), the numeric
+/// expression path. Mirrors `backend/humanize.py::hum_from_flags`: positions are
+/// absolute, so the phrase start is `min(position_ms) - leading`.
+pub fn hum_from_flags(phones: &[RenderPhone], total_frames: usize, lead_ms: f64) -> Vec<f32> {
+    let t = total_frames.max(1);
+    let mut out = vec![0.0_f32; t];
+    let mut base = phones
+        .iter()
+        .map(|p| p.position_ms)
+        .fold(f64::INFINITY, f64::min);
+    if !base.is_finite() {
+        return out;
+    }
+    base -= lead_ms.max(0.0);
+    let mut found = false;
+    for phone in phones {
+        let mut value: Option<f64> = None;
+        for flag in &phone.flags {
+            if let Some(arr) = flag.as_array() {
+                if arr.len() < 2 {
+                    continue;
+                }
+                let name = arr[0].as_str().unwrap_or("").trim().to_ascii_lowercase();
+                if name == "hu" || name == "hum" || name.starts_with("hum") {
+                    if let Some(v) = arr[1].as_f64() {
+                        value = Some(v);
+                    }
+                }
+            }
+        }
+        let Some(v) = value else { continue };
+        found = true;
+        let start = (phone.position_ms - base) / FRAME_MS;
+        let length = phone.duration_ms / FRAME_MS;
+        let i0 = start.floor().max(0.0) as usize;
+        let i1 = ((start + length).ceil().max(0.0) as usize).min(t);
+        for slot in out.iter_mut().take(i1).skip(i0) {
+            *slot = v.clamp(0.0, 100.0) as f32;
+        }
+    }
+    if found {
+        let mut sum = 0.0_f32;
+        let mut n = 0usize;
+        for v in out.iter() {
+            if *v > 0.0 {
+                sum += *v;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            let mean = sum / n as f32;
+            for v in out.iter_mut() {
+                if *v <= 0.0 {
+                    *v = mean;
+                }
+            }
+        }
+    }
+    out
 }

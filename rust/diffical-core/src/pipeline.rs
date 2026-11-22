@@ -279,7 +279,11 @@ impl RenderEngine {
             self.assembler.assemble(inputs, total_frames)?
         };
         // HUM：乐句级慢速起伏，装配完成、声码前施加；0 时完全空操作
-        let hum = humanize::hum_per_frame(&req.curves, total_frames, humanize::default_hum());
+        let mut hum = humanize::hum_per_frame(&req.curves, total_frames, humanize::default_hum());
+        if hum.iter().all(|v| *v <= 0.0) {
+            // 数值表达式通道：全局设置 + 按音符微调（flag 形如 Hu=40）
+            hum = humanize::hum_from_flags(&req.phones, total_frames, req.leading_ms);
+        }
         if hum.iter().any(|v| *v > 0.0) {
             let env = humanize::phrase_envelope(&req.notes, total_frames, req.leading_ms);
             humanize::apply(&mut mel_phrase, &hum, &env);
