@@ -11,6 +11,7 @@ pub mod config;
 pub mod effects;
 pub mod flags;
 pub mod hnsep;
+pub mod humanize;
 pub mod inference;
 pub mod mel;
 pub mod phone;

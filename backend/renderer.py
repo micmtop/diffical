@@ -58,6 +58,7 @@ from .models import get_model_manager
 from .protocol import RenderPhraseRequest, RenderResultResponse, RenderPhone
 from .overlap import MelOverlapAccumulator, _read_envelope
 from .utau_geometry import plan_oto_window
+from .humanize import hum_per_frame, phrase_envelope, apply as hum_apply
 from .source_timing import source_skip_ms
 from .source_loudness import measure_source_level
 from .voicebank import find_wav_file
@@ -1123,6 +1124,17 @@ class PhraseRenderer:
             logger.info("整句装配：PointerGen 模型")
         else:
             mel_phrase = self._concatenate_mels(phone_features, total_frames, vb_type, language)
+        # HUM（Humanization）：乐句级慢速起伏，装配后、声码前施加；
+        # 只改音量与谱倾斜，不动音高和拼接几何。HUM=0 时完全空操作。
+        try:
+            _hum = hum_per_frame(getattr(self.req, "curves", None), mel_phrase.shape[1])
+            if float(_hum.max()) > 0.0:
+                _env = phrase_envelope(getattr(self.req, "notes", None), mel_phrase.shape[1],
+                                       lead_ms=getattr(self.req, "leading_ms", 0.0))
+                mel_phrase = hum_apply(mel_phrase, _hum, _env)
+                logger.info(f"HUM 已施加: 强度峰值 {float(_hum.max()):.0f}")
+        except Exception as exc:
+            logger.warning(f"HUM 施加失败，已跳过: {exc}")
         f0_concat = f0_phrase.copy()  # phrase pitch input owns every output F0 frame
         logger.info(f"Mel拼接完成: {mel_phrase.shape[1]} 帧")
 

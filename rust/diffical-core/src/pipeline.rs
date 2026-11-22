@@ -4,6 +4,7 @@
 
 use crate::assemble::{build_inputs, seg_norm_from_env, Assembler};
 use crate::compose::{compose_envelope, geom_v3_from_env};
+use crate::humanize;
 use crate::config::AudioConfig;
 use crate::effects;
 use crate::flags::PhoneFlags;
@@ -256,6 +257,7 @@ impl RenderEngine {
             self.hnsep.as_mut(),
             self.hnsep_cache.as_ref(),
         )?;
+
         if timing {
             eprintln!(
                 "[timing] phones: {:.1} ms",
@@ -264,7 +266,7 @@ impl RenderEngine {
         }
         let stage = std::time::Instant::now();
         let total_frames = pitch.total_frames;
-        let mel_phrase = if geom_v3_from_env() {
+        let mut mel_phrase = if geom_v3_from_env() {
             compose_envelope(&features, &req.phones, total_frames, self.cfg.n_mels)?
         } else {
             let inputs = build_inputs(
@@ -276,6 +278,12 @@ impl RenderEngine {
             )?;
             self.assembler.assemble(inputs, total_frames)?
         };
+        // HUM：乐句级慢速起伏，装配完成、声码前施加；0 时完全空操作
+        let hum = humanize::hum_per_frame(&req.curves, total_frames, humanize::default_hum());
+        if hum.iter().any(|v| *v > 0.0) {
+            let env = humanize::phrase_envelope(&req.notes, total_frames, req.leading_ms);
+            humanize::apply(&mut mel_phrase, &hum, &env);
+        }
         if std::env::var_os("DIFFICAL_DUMP_STAGES").is_some() {
             dump_stage("mel", &mel_phrase.data, &pitch.f0, mel_phrase.frames, self.cfg.sample_rate)?;
         }
