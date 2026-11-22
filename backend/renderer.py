@@ -57,6 +57,7 @@ from .config import get_config
 from .models import get_model_manager
 from .protocol import RenderPhraseRequest, RenderResultResponse, RenderPhone
 from .overlap import MelOverlapAccumulator, _read_envelope
+from .utau_geometry import plan_oto_window
 from .source_timing import source_skip_ms
 from .source_loudness import measure_source_level
 from .voicebank import find_wav_file
@@ -550,75 +551,23 @@ class PhoneProcessor:
         # - cutoff > 0: 右边界 = 总时长 - cutoff（从末尾算）
         # - cutoff < 0: 右边界 = offset + |cutoff|（从 offset 算）
         # - cutoff == 0: 右边界 = 总时长
-        start_ms = offset_ms
-        con_ms = start_ms + consonant_ms
-
-        if cutoff_ms < 0:
-            end_ms = start_ms + abs(cutoff_ms)
-        elif cutoff_ms > 0:
-            end_ms = total_time_ms - cutoff_ms
-        else:
-            end_ms = total_time_ms
-
-        end_ms = min(end_ms, total_time_ms)
-        end_ms = max(end_ms, con_ms)  # 确保 end >= con
-        start_ms = max(start_ms, 0)
-
-        # VEL is transmitted as VEL/100. Zero is a valid slow-consonant value.
         vel = 2.0 ** (1.0 - float(velocity))
         pre_vel_ms = max(0.0, float(preutter_ms))
-        source_anchor_skip_ms = source_skip_ms(
-            max(0.0, float(phone.oto_preutter)), pre_vel_ms, float(velocity))
-        con_vel = consonant_ms * vel
-        con_output_ms = con_vel - source_anchor_skip_ms
         envelope = getattr(phone, 'envelope', None)
         envelope_span_ms = (pre_vel_ms + max(float(p[0]) for p in envelope)
                             if envelope else pre_vel_ms + target_duration_ms)
-        # Cover the entire supplied envelope, including an extended handover.
-        # Applying skip to an already-sized mel would discard that tail.
-        total_span_ms = max(frame_ms, envelope_span_ms, con_output_ms + frame_ms)
-        stretch_length_ms = max(0.0, end_ms - con_ms)
-        vowel_output_ms = max(frame_ms, total_span_ms - con_output_ms)
-        scaling_ratio = max(1.0, vowel_output_ms / max(stretch_length_ms, origin_frame_ms))
-        target_n_frames = max(1, int(np.ceil(total_span_ms / frame_ms)))
-        t_target_ms = np.arange(target_n_frames) * frame_ms + frame_ms / 2
-        source_clock_ms = t_target_ms + source_anchor_skip_ms
-        is_consonant = source_clock_ms < con_vel
-        consonant_mapped = start_ms + source_clock_ms / vel
-        vowel_mapped = con_ms + (source_clock_ms - con_vel) / scaling_ratio
-        _src_vowel = max(0.0, stretch_length_ms)
-        _tgt_vowel = vowel_output_ms
-        _max_stretch = 2.5
-        _loop_mode = False
-        if os.environ.get("DIFFICAL_STRETCH_DEBUG", "").lower() in ("1", "true"):
-            logger.info(f"[stretch] {phone.phoneme} src={_src_vowel:.0f}ms tgt={_tgt_vowel:.0f}ms "
-                        f"ratio={scaling_ratio:.2f} con={con_ms:.0f} end={end_ms:.0f} "
-                        f"frames={target_n_frames}")
-        if _src_vowel > 1.0 and _tgt_vowel > _src_vowel * _max_stretch:
-            # 保持区源跨度加大：过渡区用源前 45%（旧 60%），保持区覆盖
-            # 0.45S~0.97S（旧 0.6~0.95），让源内容被更充分地穿过；漂移斜率
-            # 0.45（旧 0.3）+ 游走 ±0.08S（旧 ±0.05S），频谱演化量更大，
-            # 缓解"长音只有 ~55ms 源内容可漂移 -> mel 静态 -> 电音"。
-            _onset_frac = 0.45
-            _onset_src = _src_vowel * _onset_frac
-            _onset_tgt = _onset_src * _max_stretch
-            _rel = source_clock_ms - con_vel
-            _in_onset = _rel < _onset_tgt
-            _onset_map = con_ms + (_rel / max(_onset_tgt, 1e-9)) * _onset_src
-            # 保持区做**慢漂移 + 非周期微游走**（0.45S -> 0.97S ± 0.08S）：
-            # 漂移避免 11x 拉伸的静态纯音电音、短周期循环的机关枪；
-            # 微游走（确定性 AR(1)，hash 播种）让频谱移动带自然不规则性
-            # （歌手自身音色微变化），无循环/颤音的人工感。
-            _hold_tgt = max(_tgt_vowel - _onset_tgt, 1e-9)
-            _hold_rel = np.maximum(_rel - _onset_tgt, 0.0)
-            _drift = np.minimum(_hold_rel / _hold_tgt, 1.0)
-            # Deterministically traverse recorded vowel material; no random
-            # source-time wander or generated spectral modulation.
-            _hold_map = con_ms + _src_vowel * (0.45 + _drift * 0.52)
-            vowel_mapped = np.where(_in_onset, _onset_map, _hold_map)
-        t_mapped_ms = np.where(is_consonant, consonant_mapped, vowel_mapped)
-        source_present = source_clock_ms >= 0.0
-        t_mapped_ms = np.clip(t_mapped_ms, start_ms, max(start_ms, end_ms - origin_frame_ms))
+        plan = plan_oto_window(
+            offset_ms, consonant_ms, cutoff_ms, total_time_ms,
+            pre_vel_ms, float(velocity), envelope_span_ms,
+            frame_ms=frame_ms, origin_frame_ms=origin_frame_ms,
+            oto_preutter_ms=float(phone.oto_preutter))
+        start_ms, con_ms, end_ms = plan["start_ms"], plan["con_ms"], plan["end_ms"]
+        con_vel, con_output_ms = plan["con_vel"], plan["con_output_ms"]
+        total_span_ms = plan["total_span_ms"]
+        target_n_frames = plan["target_n_frames"]
+        t_mapped_ms, source_present = plan["t_mapped_ms"], plan["source_present"]
+        source_anchor_skip_ms = float(phone.oto_preutter) * vel - pre_vel_ms
+        scaling_ratio = plan["scaling_ratio"]
 
         # 使用线性插值提取 Mel
         # Mel是用hop=128提取的，所以时间轴需要用hop=128的分辨率
