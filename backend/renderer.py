@@ -58,7 +58,7 @@ from .models import get_model_manager
 from .protocol import RenderPhraseRequest, RenderResultResponse, RenderPhone
 from .overlap import MelOverlapAccumulator, _read_envelope
 from .utau_geometry import plan_oto_window
-from .humanize import hum_per_frame, phrase_envelope, apply as hum_apply
+from .humanize import hum_per_frame, hum_from_flags, phrase_envelope, apply as hum_apply
 from .source_timing import source_skip_ms
 from .source_loudness import measure_source_level
 from .voicebank import find_wav_file
@@ -1128,6 +1128,10 @@ class PhraseRenderer:
         # 只改音量与谱倾斜，不动音高和拼接几何。HUM=0 时完全空操作。
         try:
             _hum = hum_per_frame(getattr(self.req, "curves", None), mel_phrase.shape[1])
+            if float(_hum.max()) <= 0.0:
+                # 数值表达式通道：全局设置 + 按音符微调（flag 形如 Hu=80）
+                _hum = hum_from_flags(getattr(self.req, "phones", None), mel_phrase.shape[1],
+                                      lead_ms=getattr(self.req, "leading_ms", 0.0))
             if float(_hum.max()) > 0.0:
                 _env = phrase_envelope(getattr(self.req, "notes", None), mel_phrase.shape[1],
                                        lead_ms=getattr(self.req, "leading_ms", 0.0))

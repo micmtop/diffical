@@ -38,7 +38,10 @@ def hum_per_frame(curves, total_frames: int, default: float = DEFAULT_HUM) -> np
             abbr, values = entry[0], entry[1]
         else:
             continue
-        if str(abbr).upper() != ABBR or not values:
+        key = str(abbr).strip().lower()
+        if key not in ("hum", "humanization") and not key.startswith("hum"):
+            continue
+        if not values:
             continue
         v = np.asarray(values, dtype=np.float32)
         if v.size == T:
@@ -124,4 +127,44 @@ def apply(mel: np.ndarray, hum: np.ndarray, env: np.ndarray) -> np.ndarray:
     weight = np.linspace(-1.0, 1.0, n_mels)[:, None]
     delta = (gain_db[None, :] + tilt_db[None, :] * weight) / 8.686
     out = np.asarray(mel, dtype=np.float32) + delta.astype(np.float32)
+    return out
+
+def hum_from_flags(phones, total_frames: int, lead_ms: float = 0.0,
+                   frame_ms: float = FRAME_MS) -> np.ndarray:
+    """从音素 flag（如 Hu=80）取全局/逐音素强度，铺成逐帧曲线。
+
+    HUM 作为数值表达式（全局设置 + 按音符微调）时走这条路；
+    未覆盖的帧用有值帧的均值填充，保证是乐句级而非碎片化。
+    """
+    T = max(1, int(total_frames))
+    out = np.zeros(T, dtype=np.float32)
+    found = False
+    phones = list(phones or ())
+    # 音素位置是工程绝对毫秒；乐句起点 = 首个音素位置 - 前导静音
+    base = min((float(getattr(p, "position_ms", 0.0) or 0.0) for p in phones), default=0.0) \
+        - max(0.0, float(lead_ms or 0.0))
+    for phone in phones:
+        value = None
+        for flag in (getattr(phone, "flags", None) or ()):
+            try:
+                abbr = str(flag[0]).strip().lower()
+                raw = float(flag[1])
+            except (TypeError, IndexError, ValueError):
+                continue
+            if abbr in ("hu", "hum", "huma", "human"):
+                value = raw
+        if value is None:
+            continue
+        found = True
+        start = (float(getattr(phone, "position_ms", 0.0) or 0.0) - base) / frame_ms
+        length = float(getattr(phone, "duration_ms", 0.0) or 0.0) / frame_ms
+        i0 = max(0, int(np.floor(start)))
+        i1 = min(T, max(i0, int(np.ceil(start + length))))
+        if i1 > i0:
+            out[i0:i1] = np.clip(value, 0.0, 100.0)
+    if not found:
+        return out
+    mask = out > 0
+    if mask.any():
+        out[~mask] = float(out[mask].mean())
     return out

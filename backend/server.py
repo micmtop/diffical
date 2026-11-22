@@ -82,9 +82,45 @@ def get_executor() -> ThreadPoolExecutor:
     return _executor
 
 
+_MODEL_SHA_CACHE: dict = {}
+
+
+def _model_sha() -> str:
+    """声码器权重的 sha256（客户端用它确认“这是我们自己的引擎”）。"""
+    if "value" in _MODEL_SHA_CACHE:
+        return _MODEL_SHA_CACHE["value"]
+    value = ""
+    try:
+        vocoder = get_config().model.vocoder_path
+        path = Path(vocoder) if vocoder else None
+        if path and path.is_file():
+            digest = hashlib.sha256()
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    digest.update(chunk)
+            value = digest.hexdigest()
+    except Exception as exc:  # 没有权重也要能起来，退化成源码指纹
+        logger.warning(f"读取声码器指纹失败: {exc}")
+    if not value:
+        value = _runtime_identity()["backend_source_digest"]
+    _MODEL_SHA_CACHE["value"] = value
+    return value
+
+
 async def handle_health(request: web.Request) -> web.Response:
-    """健康检查"""
+    """健康检查（纯文本，兼容旧调用）"""
     return web.Response(text="ok", status=200)
+
+
+async def handle_health_json(request: web.Request) -> web.Response:
+    """健康检查（JSON）：客户端要求 status=ok 且带 model_sha。"""
+    identity = request.app[_RUNTIME_KEY]
+    return web.json_response({
+        "status": "ok",
+        "model_sha": _model_sha(),
+        "audio_cache_version": AUDIO_CACHE_VERSION,
+        "backend_source_digest": identity["backend_source_digest"],
+    })
 
 
 async def handle_render(request: web.Request) -> web.Response:
@@ -149,12 +185,14 @@ async def handle_render(request: web.Request) -> web.Response:
                 })
             logger.info(
                 "[REQLOG] singer=%s phones=%d total_ms=%.0f hash=%d curves_pitch=%d dyn=%d gen=%d bre=%d tns=%d voi=%d "
-                "first=%s",
+                "curves=%s first=%s",
                 (phrase_request.singer_path or '')[-80:], len(_phones),
                 _safe_num(phrase_request.duration_ms), getattr(phrase_request, 'hash', 0) or 0,
                 len(phrase_request.pitches or []), len(phrase_request.dynamics or []),
                 len(phrase_request.gender or []), len(phrase_request.breathiness or []),
                 len(phrase_request.tension or []), len(phrase_request.voicing or []),
+                [ (c.get('abbr') if isinstance(c, dict) else (c[0] if isinstance(c, (tuple, list)) and len(c) > 1 else None))
+                  for c in (getattr(phrase_request, 'curves', None) or []) ],
                 str(_samples),
             )
         except Exception as _e:
@@ -248,6 +286,7 @@ def create_app() -> web.Application:
     app = web.Application()
     app[_RUNTIME_KEY] = _runtime_identity()
     app.router.add_get("/", handle_health)
+    app.router.add_get("/health", handle_health_json)
     app.router.add_get("/status", handle_status)
     app.router.add_post("/render", handle_render)
     return app
