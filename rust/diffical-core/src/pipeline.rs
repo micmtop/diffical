@@ -3,6 +3,7 @@
 //! -> phrase effects (HG / A) -> post-processing.
 
 use crate::assemble::{build_inputs, seg_norm_from_env, Assembler};
+use crate::compose::{compose_envelope, geom_v3_from_env};
 use crate::config::AudioConfig;
 use crate::effects;
 use crate::flags::PhoneFlags;
@@ -263,14 +264,18 @@ impl RenderEngine {
         }
         let stage = std::time::Instant::now();
         let total_frames = pitch.total_frames;
-        let inputs = build_inputs(
-            &features,
-            total_frames,
-            &pitch.f0,
-            self.cfg.n_mels,
-            self.seg_norm,
-        )?;
-        let mel_phrase = self.assembler.assemble(inputs, total_frames)?;
+        let mel_phrase = if geom_v3_from_env() {
+            compose_envelope(&features, &req.phones, total_frames, self.cfg.n_mels)?
+        } else {
+            let inputs = build_inputs(
+                &features,
+                total_frames,
+                &pitch.f0,
+                self.cfg.n_mels,
+                self.seg_norm,
+            )?;
+            self.assembler.assemble(inputs, total_frames)?
+        };
         if std::env::var_os("DIFFICAL_DUMP_STAGES").is_some() {
             dump_stage("mel", &mel_phrase.data, &pitch.f0, mel_phrase.frames, self.cfg.sample_rate)?;
         }

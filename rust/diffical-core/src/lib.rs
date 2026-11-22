@@ -6,6 +6,7 @@
 
 pub mod assemble;
 pub mod biquad;
+pub mod compose;
 pub mod config;
 pub mod effects;
 pub mod flags;
