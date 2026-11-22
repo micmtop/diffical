@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # 全局线程池（推理用）
 _executor: Optional[ThreadPoolExecutor] = None
 _RUNTIME_KEY = web.AppKey('runtime_identity', dict)
-AUDIO_CACHE_VERSION = '20261018handover2'
+AUDIO_CACHE_VERSION = '20261122_hum_flag'
 
 
 def _runtime_identity() -> dict:
