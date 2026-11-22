@@ -84,16 +84,9 @@ pub fn build_inputs(
     let mut lens: Vec<usize> = Vec::with_capacity(prepared.len());
     let mut spans: Vec<(usize, usize)> = Vec::with_capacity(prepared.len());
     for (i, entry) in prepared.iter().enumerate() {
-        let used = if seg_norm {
-            let next_a = if i + 1 < prepared.len() {
-                prepared[i + 1].a - entry.a
-            } else {
-                entry.b - entry.a
-            };
-            next_a.clamp(2, entry.mel.frames)
-        } else {
-            entry.b - entry.a
-        };
+        // 完整窗口：不再裁到下一音素的音频起点。截断会让每个音素丢掉
+        // 自己内容的大半，重叠区内容在进模型前就没了。
+        let used = entry.b - entry.a;
         segs.push(entry.mel);
         lens.push(used);
         spans.push((entry.a, entry.a + used));
