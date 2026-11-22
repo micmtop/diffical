@@ -256,7 +256,16 @@ def plan_oto_window(offset_ms: float, consonant_ms: float, cutoff_ms: float,
 
     t_mapped_ms = np.where(is_consonant, consonant_mapped, vowel_mapped)
     source_present = source_clock_ms >= 0.0
-    t_mapped_ms = np.clip(t_mapped_ms, start_ms, max(start_ms, end_ms - origin_frame_ms))
+    # 长音时源时钟会被推到窗口末端；硬 clip 会让源位置“冻结”在最后一帧，
+    # 听感就是卡一下。改成在最后一段内来回折返（ping-pong），位置连续不停顿。
+    _limit = max(start_ms, end_ms - origin_frame_ms)
+    _over = t_mapped_ms > _limit
+    if np.any(_over):
+        _span = max(1.0, _limit - con_ms)
+        _x = t_mapped_ms[_over] - _limit
+        t_mapped_ms = np.array(t_mapped_ms, copy=True)
+        t_mapped_ms[_over] = _limit - np.abs(np.mod(_x, 2.0 * _span) - _span)
+    t_mapped_ms = np.clip(t_mapped_ms, start_ms, _limit)
     return dict(start_ms=start_ms, con_ms=con_ms, end_ms=end_ms, vel=vel,
                 con_vel=con_vel, con_output_ms=con_output_ms,
                 total_span_ms=total_span_ms, target_n_frames=target_n_frames,
