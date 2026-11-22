@@ -110,8 +110,9 @@ pub fn compose_envelope(
 
 /// Env switch: composition is on unless explicitly disabled.
 pub fn geom_v3_from_env() -> bool {
+    // PointerGen 装配是默认路径；几何合成只能显式开启，用于对照实验。
     match std::env::var("DIFFICAL_GEOM_V3") {
-        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"),
-        Err(_) => true,
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        Err(_) => false,
     }
 }

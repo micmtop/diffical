@@ -63,8 +63,9 @@ def assemble(phone_features: List[dict], total_frames: int, f0: np.ndarray,
         f0v = np.pad(f0v, (0, total_frames - f0v.shape[0]))
     f0v = np.where((f0v > 0) & (f0v < 55.0), 0.0, f0v)
 
-    # V3（UTAU envelope 几何）默认开启；DIFFICAL_GEOM_V3=0 可回退到旧装配
-    geom_v3 = os.environ.get("DIFFICAL_GEOM_V3", "1").lower() not in ("0", "false", "no")
+    # 默认路径 = PointerGen 模型装配。DIFFICAL_GEOM_V3=1 只用于对照实验，
+    # 不允许用几何合成替代模型作为默认行为。
+    geom_v3 = os.environ.get("DIFFICAL_GEOM_V3", "0").lower() in ("1", "true", "yes")
     if geom_v3:
         from .utau_geometry import windows_from_features, compose_inputs
         wins = windows_from_features(feats)
