@@ -84,6 +84,9 @@ def assemble(phone_features: List[dict], total_frames: int, f0: np.ndarray,
                                            for w in wins]}, ensure_ascii=False, indent=1))
         return inp["smooth"].astype(np.float32)
 
+    # V3=0 回退路径（ONNX 装配器）需要的容器
+    segs, lens, spans = [], [], []
+    geom = []
     for i, (a, b, mel) in enumerate(feats_n):
         if norm:
             # 生产段是重叠的：只保留会被 seg_idx 用到的帧，并让 progress 走满 0..1，
