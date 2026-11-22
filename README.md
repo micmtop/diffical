@@ -2,12 +2,6 @@
 
 基于 PointerGen 拼接模型 + 各种 Flag + NSF-HiFiGAN = 自然的歌声
 
-（后端把每个音素的 mel 片段装配成整句 mel，再交给冻结的 NSF-HiFiGAN 声码器出声（44.1 kHz，hop 512，128 bins）。）
-
-拼接口径跟 UTAU 一致：按 oto 窗口取内容、按 envelope 跨度 `[p0, p4]` 放置，辅音不随音符拉伸、
-元音按比例、长音走漂移轨迹；两个音素在重叠区 `[p0, p1]` 共存，用包络增益在功率域合成。
-不做波形域交叉淡化，也不在输出上做淡入淡出/EQ。`DIFFICAL_GEOM_V3=0` 可回退到上一版神经网络装配器。（虽然没必要）
-
 ```
 OpenUtau --HTTP 8573--> 后端
                           oto 窗口取内容（hop-128 源时钟）-> 按 envelope 跨度放置
@@ -19,14 +13,6 @@ OpenUtau --HTTP 8573--> 后端
 ## Flag 支持
 
 支持曲线Flag （使用前记得去同步！不然没有地方用！）。
-
-OpenUtau 里带 flag 的数值表达式会随请求按音素送到后端。请求里的形状：
-
-```json
-"flags": [["Hb", 100, "breathiness"], ["Hu", 40, "humanization"]]
-```
-
-每项是 `[flag, value, abbr]`。后端按 flag 名取值，`abbr` 只用于日志。
 
 当前生效的 flag (注意多是曲线)：
 
@@ -55,9 +41,6 @@ HUM 是数值表达式（`Humanization`，abbr `HUM`，flag `Hu`），全局设�
 `Hu=0` 时不生效，未设置时默认 0，可用 `DIFFICAL_HUM_DEFAULT` 改。工程里若存成 Curve
 类型的 `hum` 曲线，后端也读，两条路径取其一。
 
-实测（真实工程，同一句只改 HUM）：HUM=20 起伏约 1.9 dB 峰峰，HUM=40 约 4.1 dB，
-HUM=80 约 8.6 dB。
-
 ## AIGC提示
 
 本项目使用了 AI 辅助编码（即人工提出项目框架 + AI实现代码 + 人工复核）。
@@ -83,36 +66,12 @@ v0.1。已经在 OpenUtau 里完整跑通，日常可用，但仍是研究阶段
 - 差 oto 补偿不是万能的：已经被 oto 切掉的内容补不回来。
 - 项目初期不稳定。 
 
-## 性能（无 hn-sep）
-
-纯 CPU（onnxruntime CPUExecutionProvider，Mac M1 系列），三次预热后取平均：
-
-| 请求 | 音频时长 | 端到端耗时 | RTF |
-|---|---|---|---|
-| 短句 | 1.70 s | 1.64 s | 0.97 |
-| 长句 | 7.38 s | 2.49 s | 0.34 |
-
-分组件：
-
-| 组件 | 1 s 音频 | 7.4 s 音频 | 17.4 s 音频 |
-|---|---|---|---|
-| 声码器 | 244 ms | 2.21 s | 5.29 s |
-| 装配器（ONNX） | 4.9 ms | 23 ms | 52 ms |
-
-（RTF 是渲染耗时除以音频时长，小于 1 表示比实时快。）
-
-声码器占大头，约 0.24–0.30 RTF，耗时随长度基本线性增长；装配器可以忽略。三秒以上的句子能实时渲染；一秒级的短句受固定开销影响，接近 1 但不够稳定。
-
-## 模型
+## 核心拼接模型
 
 PointerGen，3.54M 参数，`c=416`，`n_ctx=3`。
 
 输入：`segs [S,128,L]`、`seg_len`、`seg_idx`、`progress`、`boundary`、`f0`。
 输出：`gather_seg(segs, tau) + tanh(residual)`，其中 `tau = progress + tanh(dtau) * 0.5`，模型可以在片段内移动读取位置。
-
-训练数据用同一段录音自己的切片构造，按 40% 比例注入 oto 式缺陷（起点偏移、尾部截断、头部裁切、长辅音占窗），其余保持干净。目标是原录音的 mel。
-
-训练脚本每 1000 步在固定留出集上评估并保存 best 权重。数据审计脚本检查训练/验证是否重叠、字段是否完整，红了一律不训。
 
 ## 目录
 
@@ -139,7 +98,7 @@ python -m backend.server            # 监听 127.0.0.1:8573
 
 声码器权重不随仓库分发，按 `docs/config.example.yaml` 里的路径放好。
 
-OpenUtau 侧的接入代码单独维护。
+OpenUtau 侧的接入代码单独维护（由我）。
 
 ## 训练
 
@@ -163,7 +122,7 @@ python -m train.train_set --arch pointer --width 416 --pairs train/data/pairs \
 python tools/export_onnx.py --ckpt train/ckpt_new/best.pt --out export/pointer.onnx
 ```
 
-导出脚本会检查动态 shape 下的数值一致性（阈值 1e-4），并把 ckpt/onnx 的 sha256、输入输出、mel 契约写进同名 json。当前实测 parity 1e-5 量级，CPU 上 1 秒音频的装配约 5 ms。
+导出脚本会检查动态 shape 下的数值一致性（阈值 1e-4），并把 ckpt/onnx 的 sha256、输入输出、mel 契约写进同名 json。
 
 ## 权重与许可
 
