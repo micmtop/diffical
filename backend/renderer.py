@@ -1115,7 +1115,10 @@ class PhraseRenderer:
 
         # 声码器会完全重建波形，因此波形域crossfade的相位信息会被破坏
         language = getattr(self.req, 'language', 'JA') or 'JA'
-        if os.environ.get("DIFFICAL_ENGINE", "").lower() == "model":
+        # 默认路径 = PointerGen 模型装配。只有显式 DIFFICAL_ENGINE=legacy 才用旧的
+        # 顺序拼接；客户端拉起后端时不再依赖任何环境变量。
+        _engine = os.environ.get("DIFFICAL_ENGINE", "model").strip().lower()
+        if _engine not in ("legacy", "concat", "concatenate", "off"):
             from .model_assembly import assemble as _model_assemble
             mel_phrase = _model_assemble(phone_features, total_frames, f0_phrase,
                                          self.config.audio.n_mels)
