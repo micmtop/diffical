@@ -2,6 +2,8 @@
 
 基于 PointerGen 拼接模型 + 各种 Flag + NSF-HiFiGAN = 自然的歌声
 
+**（项目目前快速迭代不稳定，追求稳定者慎用）**
+
 ```
 OpenUtau --HTTP 8573--> 后端
                           oto 窗口取内容（hop-128 源时钟）-> 按 envelope 跨度放置
